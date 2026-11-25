@@ -2,12 +2,13 @@
   "name": "disaster-safety-web",
   "private": true,
   "version": "1.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview"
-  },
+  "type": "module","scripts": {
+  "dev": "vite",
+  "start": "vite",
+  "build": "vite build",
+  "preview": "vite preview"
+},
+ 
   "dependencies": {
     "@capacitor/android": "^8.6.2",
     "@capacitor/core": "^8.6.2",

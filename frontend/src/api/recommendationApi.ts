@@ -1,11 +1,4 @@
-/**
- * Recommendation & Disaster-Specific Safe-Location Suitability API Client
- *
- * Connects to:
- *   - POST /api/v1/recommendations/assess
- *   - POST /api/v1/recommendations/unified
- */
-
+import { requestJson } from './client';
 import { DisasterEventSummary } from './disasterApi';
 import { RouteClassification, RouteDetailItem } from './routeApi';
 
@@ -52,7 +45,7 @@ export interface StageDiagnostics {
   data_sources_failed: string[];
   raw_geographical_features_found: number;
   valid_candidates_discovered: number;
-  enrichment_status: Record<string, any>;
+  enrichment_status: Record<string, unknown>;
   candidates_assessed: number;
   candidates_suitable_with_evidence: number;
   candidates_conditionally_suitable: number;
@@ -124,10 +117,6 @@ export interface UnifiedRecommendationResponse {
   safety_disclaimer: string;
 }
 
-const BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
-  'http://localhost:8000';
-
 export interface LocationSuitabilityAssessmentItem {
   assessment_id?: string | null;
   location_id: string;
@@ -185,54 +174,22 @@ export interface AssessRecommendationsResponse {
   safety_disclaimer: string;
 }
 
-/**
- * Triggers disaster-specific safe-location suitability assessment for candidate destinations.
- */
-export async function assessSafeLocationsSuitability(
+export function assessSafeLocationsSuitability(
   request: AssessRecommendationsRequest,
 ): Promise<AssessRecommendationsResponse> {
-  const url = `${BASE_URL}/api/v1/recommendations/assess`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(request),
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `Failed to assess recommendations: ${response.status} ${response.statusText}`,
-    );
-  }
-
-  return response.json();
+  return requestJson<AssessRecommendationsResponse>(
+    '/api/v1/recommendations/assess',
+    { method: 'POST', body: JSON.stringify(request) },
+    'Failed to assess recommendations',
+  );
 }
 
-/**
- * Executes Unified Disaster Recommendation Engine:
- * Combines hazard evaluation, destination suitability, and OSRM evacuation routing.
- */
-export async function fetchUnifiedRecommendations(
+export function fetchUnifiedRecommendations(
   request: UnifiedRecommendationRequest,
 ): Promise<UnifiedRecommendationResponse> {
-  const url = `${BASE_URL}/api/v1/recommendations/unified`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(request),
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `Failed to generate unified recommendations: ${response.status} ${response.statusText}`,
-    );
-  }
-
-  return response.json();
+  return requestJson<UnifiedRecommendationResponse>(
+    '/api/v1/recommendations/unified',
+    { method: 'POST', body: JSON.stringify(request) },
+    'Failed to generate unified recommendations',
+  );
 }
-

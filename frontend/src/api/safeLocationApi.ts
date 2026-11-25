@@ -1,17 +1,5 @@
-/**
- * Safe Locations API client for the Disaster Safety Application.
- *
- * Connects to:
- *   - GET /api/v1/safe-locations/nearby
- *   - GET /api/v1/safe-locations/{location_id}
- *   - POST /api/v1/safe-locations/sync
- */
-
+import { requestJson } from './client';
 import { GeoJSONPoint } from './disasterApi';
-
-const BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
-  'http://localhost:8000';
 
 export type DesignationStatus = 'OFFICIAL' | 'POTENTIAL' | 'UNKNOWN';
 export type VerificationStatus = 'VERIFIED' | 'UNVERIFIED' | 'REJECTED';
@@ -80,7 +68,7 @@ export interface FetchNearbyLocationsParams {
   limit?: number;
 }
 
-export async function fetchNearbySafeLocations(
+export function fetchNearbySafeLocations(
   params: FetchNearbyLocationsParams,
 ): Promise<NearbySafeLocationsResponse> {
   const query = new URLSearchParams({
@@ -90,61 +78,41 @@ export async function fetchNearbySafeLocations(
     limit: String(params.limit ?? 50),
   });
 
-  if (params.category) {
-    query.set('category', params.category);
-  }
-  if (params.verification_status) {
-    query.set('verification_status', params.verification_status);
-  }
+  if (params.category) query.set('category', params.category);
+  if (params.verification_status) query.set('verification_status', params.verification_status);
 
-  const url = `${BASE_URL}/api/v1/safe-locations/nearby?${query.toString()}`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch safe locations: ${response.status} ${response.statusText}`);
-  }
-
-  return response.json();
+  return requestJson<NearbySafeLocationsResponse>(
+    `/api/v1/safe-locations/nearby?${query.toString()}`,
+    {},
+    'Failed to fetch safe locations',
+  );
 }
 
-export async function fetchAllSafeLocations(
-  params?: { category?: string; verification_status?: VerificationStatus; limit?: number },
-): Promise<NearbySafeLocationsResponse> {
+export function fetchAllSafeLocations(params?: {
+  category?: string;
+  verification_status?: VerificationStatus;
+  limit?: number;
+}): Promise<NearbySafeLocationsResponse> {
   const query = new URLSearchParams();
   if (params?.category) query.set('category', params.category);
   if (params?.verification_status) query.set('verification_status', params.verification_status);
   if (params?.limit) query.set('limit', String(params.limit));
 
-  const url = `${BASE_URL}/api/v1/safe-locations/all?${query.toString()}`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch all safe locations: ${response.status} ${response.statusText}`);
-  }
-
-  return response.json();
+  return requestJson<NearbySafeLocationsResponse>(
+    `/api/v1/safe-locations/all?${query.toString()}`,
+    {},
+    'Failed to fetch all safe locations',
+  );
 }
 
-export async function fetchSafeLocationDetails(
+export function fetchSafeLocationDetails(
   locationId: string,
 ): Promise<SafeLocationDetailResponse> {
-  const url = `${BASE_URL}/api/v1/safe-locations/${locationId}`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch location details: ${response.status} ${response.statusText}`);
-  }
-
-  return response.json();
+  return requestJson<SafeLocationDetailResponse>(
+    `/api/v1/safe-locations/${locationId}`,
+    {},
+    'Failed to fetch location details',
+  );
 }
 
 export interface EarthquakeSafetyFields {
@@ -250,36 +218,31 @@ export interface FindSafePlacesResponse {
   disaster_safety_disclaimer: string;
 }
 
-export async function findSafePlacesNearUser(params: {
+export function findSafePlacesNearUser(params: {
   latitude: number;
   longitude: number;
   disaster_type?: string | null;
   max_radius_km?: number;
   limit?: number;
 }): Promise<FindSafePlacesResponse> {
-  const url = `${BASE_URL}/api/v1/safe-locations/find-safe-places`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
+  return requestJson<FindSafePlacesResponse>(
+    '/api/v1/safe-locations/find-safe-places',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        latitude: params.latitude,
+        longitude: params.longitude,
+        disaster_type:
+          params.disaster_type && params.disaster_type !== 'ALL'
+            ? params.disaster_type
+            : null,
+        max_radius_km: params.max_radius_km ?? 5.0,
+        limit: params.limit ?? 20,
+      }),
     },
-    body: JSON.stringify({
-      latitude: params.latitude,
-      longitude: params.longitude,
-      disaster_type: params.disaster_type && params.disaster_type !== 'ALL' ? params.disaster_type : null,
-      max_radius_km: params.max_radius_km ?? 5.0,
-      limit: params.limit ?? 20,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to find safe places near user: ${response.status} ${response.statusText}`);
-  }
-
-  return response.json();
+    'Failed to find safe places near user',
+  );
 }
 
 export * from './recommendationApi';
 export * from './routeApi';
-

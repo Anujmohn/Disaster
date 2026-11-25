@@ -1,27 +1,12 @@
-/**
- * LocationScreen (Web Version)
- *
- * Implements:
- * 1. Browser Geolocation API permission and fix retrieval via navigator.geolocation.
- * 2. POST to /api/v1/location/validate for PostGIS boundary and coordinate validation.
- * 3. Accuracy, altitude, timestamp, and coordinate rendering.
- * 4. Error states: permission denied, insecure context (HTTP), timeout, server errors.
- * 5. Explicit user-controlled location refresh.
- */
-
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import {
-  getCurrentBrowserLocation,
   BrowserGeolocationError,
   checkGeolocationAvailability,
+  getCurrentBrowserLocation,
 } from '../services/browserLocationService';
 import { bleChatService } from '../services/bleChatService';
-import {
-  validateLocation,
-  LocationData,
-  ApiValidationError,
-} from '../api/locationApi';
+import { ApiValidationError, LocationData, validateLocation } from '../api/locationApi';
 
 type ScreenState =
   | { status: 'idle' }
@@ -34,13 +19,16 @@ type ScreenState =
   | { status: 'server_error'; message: string }
   | { status: 'validation_error'; errors: ApiValidationError[] };
 
-function formatCoord(value: number, decimals = 6): string {
+function formatCoord(value: number, decimals = 5): string {
   return value.toFixed(decimals);
 }
 
 function formatDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleString();
+    return new Date(iso).toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
   } catch {
     return iso;
   }
@@ -92,15 +80,13 @@ export default function LocationScreen(): React.JSX.Element {
       if (typeof window !== 'undefined' && window.isSecureContext === false) {
         setState({ status: 'insecure_context' });
       } else {
-        setState({ status: 'gps_error', message: check.reason ?? 'Geolocation not available.' });
+        setState({ status: 'gps_error', message: check.reason ?? 'Location is unavailable on this device.' });
       }
       return;
     }
 
     try {
       const fix = await getCurrentBrowserLocation();
-
-      // Validate fix with FastAPI backend
       const res = await validateLocation({
         latitude: fix.latitude,
         longitude: fix.longitude,
@@ -118,7 +104,7 @@ export default function LocationScreen(): React.JSX.Element {
       } else {
         setState({ status: 'server_error', message: res.message });
       }
-    } catch (err: unknown) {
+    } catch (err) {
       if (err && typeof err === 'object' && 'type' in err) {
         const geoErr = err as BrowserGeolocationError;
         if (geoErr.type === 'PERMISSION_DENIED') {
@@ -143,30 +129,32 @@ export default function LocationScreen(): React.JSX.Element {
   return (
     <div className="location-page-container">
       <div className="location-card">
-        <h1 className="location-title">Device Location</h1>
-        <p className="location-subtitle">Disaster Safety Verification Platform</p>
+        <div className="location-hero-icon" aria-hidden="true">📍</div>
+        <h1 className="location-title">Your Current Location</h1>
+        <p className="location-subtitle">Used to find nearby shelters, alerts, and safe evacuation routes</p>
 
-        {/* Status representations */}
         {state.status === 'idle' && (
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', fontSize: '0.95rem' }}>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', fontSize: '0.95rem', lineHeight: 1.5 }}>
             {isNative
-              ? 'Press the button below to acquire your device GPS coordinates and validate them against the PostGIS database.'
-              : "Press the button below to acquire your browser's current GPS coordinates and validate them against the PostGIS database."}
+              ? 'Tap below to confirm your phone’s GPS location so we can guide you to the closest safe places.'
+              : 'Share your current location so we can show nearby alerts and safe shelters around you.'}
           </p>
         )}
 
         {state.status === 'loading' && (
           <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-            <div style={{
-              width: '32px',
-              height: '32px',
-              border: '3px solid #E2E8F0',
-              borderTopColor: 'var(--accent)',
-              borderRadius: '50%',
-              animation: 'spin 1s linear infinite'
-            }}></div>
+            <div
+              style={{
+                width: '32px',
+                height: '32px',
+                border: '3px solid #E2E8F0',
+                borderTopColor: 'var(--accent)',
+                borderRadius: '50%',
+                animation: 'spin 1s linear infinite',
+              }}
+            />
             <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
-              Acquiring GPS fix & validating with backend...
+              Finding your exact position…
             </p>
           </div>
         )}
@@ -175,9 +163,9 @@ export default function LocationScreen(): React.JSX.Element {
           <div className="data-table-card" style={{ borderColor: '#BBF7D0', background: '#F0FDF4' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
               <span style={{ fontWeight: 700, color: '#166534', fontSize: '0.95rem' }}>
-                ✓ GPS Coordinates Validated
+                ✓ Location Confirmed
               </span>
-              <span className="badge badge-verified">PostGIS GeoJSON</span>
+              <span className="badge badge-verified">Ready</span>
             </div>
 
             <div className="data-row">
@@ -189,24 +177,24 @@ export default function LocationScreen(): React.JSX.Element {
               <span className="data-value">{formatCoord(state.location.longitude)}°</span>
             </div>
             <div className="data-row">
-              <span className="data-label">Accuracy</span>
+              <span className="data-label">Signal Accuracy</span>
               <span className="data-value">
-                {state.location.accuracy_m != null ? `${state.location.accuracy_m.toFixed(1)} m` : 'Unavailable'}
+                {state.location.accuracy_m != null ? `Within ${Math.round(state.location.accuracy_m)} m` : 'Unavailable'}
               </span>
             </div>
             <div className="data-row">
-              <span className="data-label">Altitude</span>
+              <span className="data-label">Elevation</span>
               <span className="data-value">
                 {state.location.altitude_m != null ? `${state.location.altitude_m.toFixed(1)} m` : 'Unavailable'}
               </span>
             </div>
             <div className="data-row">
-              <span className="data-label">Captured At</span>
+              <span className="data-label">Updated</span>
               <span className="data-value">{formatDate(state.location.captured_at)}</span>
             </div>
 
             <div style={{ marginTop: '12px', fontSize: '0.8rem', color: '#166534', textAlign: 'center' }}>
-              {isNative ? '📍 Device GPS (Android Location)' : '🌐 Live Browser Geolocation (HTML5 W3C Standard)'}
+              {isNative ? '📍 Using Phone GPS' : '🌐 Using Browser Location'}
             </div>
           </div>
         )}
@@ -214,13 +202,13 @@ export default function LocationScreen(): React.JSX.Element {
         {state.status === 'permission_denied' && (
           <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '12px', padding: '16px', marginBottom: '24px' }}>
             <div style={{ fontSize: '2rem', marginBottom: '8px' }}>🔒</div>
-            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#991B1B', marginBottom: '6px' }}>Location Permission Required</h3>
-            <p style={{ fontSize: '0.875rem', color: '#7F1D1D', lineHeight: 1.4, marginBottom: isNative && state.permanentlyDenied ? '12px' : 0 }}>
+            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#991B1B', marginBottom: '6px' }}>Location Access Needed</h3>
+            <p style={{ fontSize: '0.875rem', color: '#7F1D1D', lineHeight: 1.45, marginBottom: isNative && state.permanentlyDenied ? '12px' : 0 }}>
               {isNative
                 ? state.permanentlyDenied
-                  ? 'Location permission was denied. Open Android App Settings, enable Location permission for Disaster Safety, and return here.'
-                  : 'Location access is required to retrieve your GPS coordinates. Tap the button below to grant permission.'
-                : "Location access was denied. Please click the permissions icon in your browser's address bar, allow location access, and try again."}
+                  ? 'Location permission is turned off. Open App Settings, allow Location for this app, and come back here.'
+                  : 'We need location permission to find shelters near you. Tap below to allow it.'
+                : 'Location access was blocked. Click the lock or location icon in your browser address bar, allow location, and try again.'}
             </p>
             {isNative && state.permanentlyDenied && (
               <button
@@ -238,9 +226,9 @@ export default function LocationScreen(): React.JSX.Element {
         {state.status === 'insecure_context' && (
           <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '12px', padding: '16px', marginBottom: '24px' }}>
             <div style={{ fontSize: '2rem', marginBottom: '8px' }}>⚠️</div>
-            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#92400E', marginBottom: '6px' }}>Insecure Context Detected</h3>
-            <p style={{ fontSize: '0.875rem', color: '#B45309', lineHeight: 1.4 }}>
-              Modern browsers restrict Geolocation API to HTTPS origins or localhost. Please access this application via HTTPS or http://localhost.
+            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#92400E', marginBottom: '6px' }}>Secure Connection Needed</h3>
+            <p style={{ fontSize: '0.875rem', color: '#B45309', lineHeight: 1.45 }}>
+              Browsers only share GPS location over HTTPS or localhost. Open this page with HTTPS (or localhost) to detect your location automatically.
             </p>
           </div>
         )}
@@ -249,9 +237,9 @@ export default function LocationScreen(): React.JSX.Element {
           <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '12px', padding: '16px', marginBottom: '24px' }}>
             <div style={{ fontSize: '2rem', marginBottom: '8px' }}>⚠️</div>
             <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#991B1B', marginBottom: '6px' }}>
-              {state.status === 'network_error' ? 'Network Connection Error' : 'Location Evaluation Error'}
+              {state.status === 'network_error' ? 'Connection Issue' : 'Could Not Read Location'}
             </h3>
-            <p style={{ fontSize: '0.875rem', color: '#7F1D1D', lineHeight: 1.4 }}>
+            <p style={{ fontSize: '0.875rem', color: '#7F1D1D', lineHeight: 1.45 }}>
               {state.message}
             </p>
           </div>
@@ -259,10 +247,10 @@ export default function LocationScreen(): React.JSX.Element {
 
         {state.status === 'validation_error' && (
           <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '12px', padding: '16px', marginBottom: '24px' }}>
-            <div style={{ fontSize: '2rem', marginBottom: '8px' }}>❌</div>
-            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#991B1B', marginBottom: '6px' }}>Coordinates Rejected</h3>
-            <p style={{ fontSize: '0.875rem', color: '#7F1D1D', lineHeight: 1.4 }}>
-              {state.errors.map(e => e.msg).join('; ')}
+            <div style={{ fontSize: '2rem', marginBottom: '8px' }}>📍</div>
+            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#991B1B', marginBottom: '6px' }}>Location Outside Coverage</h3>
+            <p style={{ fontSize: '0.875rem', color: '#7F1D1D', lineHeight: 1.45 }}>
+              {state.errors.map((e) => e.msg).join('; ')}
             </p>
           </div>
         )}
@@ -273,7 +261,7 @@ export default function LocationScreen(): React.JSX.Element {
           onClick={handleGetLocation}
           disabled={isLoading}
         >
-          {isLoading ? 'Verifying...' : state.status === 'success' ? '↻ Refresh GPS Coordinates' : '📍 Get My Location'}
+          {isLoading ? 'Checking Location…' : state.status === 'success' ? '↻ Update My Location' : '📍 Share My Location'}
         </button>
       </div>
 

@@ -1,22 +1,5 @@
-/**
- * Disaster Alert and Notification System API Client
- *
- * Connects to:
- *   - GET  /api/v1/alerts/nearby
- *   - POST /api/v1/alerts/sync
- *   - GET  /api/v1/notifications/preferences
- *   - PUT  /api/v1/notifications/preferences
- *   - POST /api/v1/notifications/devices/register
- *   - DELETE /api/v1/notifications/devices/{device_id}
- *   - GET  /api/v1/notifications/history
- *   - PATCH /api/v1/notifications/history/{notification_id}/read
- */
-
+import { API_BASE_URL, requestJson } from './client';
 import { DisasterType } from './disasterApi';
-
-const BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
-  'http://localhost:8000';
 
 export type AlertClassification =
   | 'OFFICIAL_WARNING'
@@ -50,8 +33,8 @@ export interface AlertItem {
   issued_at: string | null;
   valid_until: string | null;
   distance_km: number | null;
-  location: any | null;
-  affected_area: any | null;
+  location: unknown | null;
+  affected_area: unknown | null;
   freshness: string;
   is_official_warning: boolean;
   deep_link_url: string | null;
@@ -163,10 +146,7 @@ export interface AlertSyncResponse {
   disclaimer: string;
 }
 
-/**
- * Retrieves active nearby alerts and official warnings.
- */
-export async function fetchNearbyAlerts(
+export function fetchNearbyAlerts(
   request: NearbyAlertsRequest,
 ): Promise<NearbyAlertsResponse> {
   const params = new URLSearchParams({
@@ -178,128 +158,91 @@ export async function fetchNearbyAlerts(
   if (request.disaster_type) params.append('disaster_type', request.disaster_type);
   if (request.classification) params.append('classification', request.classification);
 
-  const res = await fetch(`${BASE_URL}/api/v1/alerts/nearby?${params.toString()}`, {
-    headers: { Accept: 'application/json' },
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch alerts: ${res.status} ${res.statusText}`);
-  }
-  return res.json();
+  return requestJson<NearbyAlertsResponse>(
+    `/api/v1/alerts/nearby?${params.toString()}`,
+    {},
+    'Failed to fetch alerts',
+  );
 }
 
-/**
- * Retrieves persistent notification preferences for a device installation.
- */
-export async function fetchDevicePreferences(
+export function fetchDevicePreferences(
   deviceId: string,
 ): Promise<DevicePreferencesRead> {
-  const res = await fetch(
-    `${BASE_URL}/api/v1/notifications/preferences?device_id=${encodeURIComponent(deviceId)}`,
-    { headers: { Accept: 'application/json' } },
+  return requestJson<DevicePreferencesRead>(
+    `/api/v1/notifications/preferences?device_id=${encodeURIComponent(deviceId)}`,
+    {},
+    'Failed to fetch preferences',
   );
-  if (!res.ok) {
-    throw new Error(`Failed to fetch preferences: ${res.status}`);
-  }
-  return res.json();
 }
 
-/**
- * Updates notification preferences for a device installation.
- */
-export async function updateDevicePreferences(
+export function updateDevicePreferences(
   update: DevicePreferencesUpdate,
 ): Promise<DevicePreferencesRead> {
-  const res = await fetch(`${BASE_URL}/api/v1/notifications/preferences`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(update),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to update preferences: ${res.status}`);
-  }
-  return res.json();
+  return requestJson<DevicePreferencesRead>(
+    '/api/v1/notifications/preferences',
+    { method: 'PUT', body: JSON.stringify(update) },
+    'Failed to update preferences',
+  );
 }
 
-/**
- * Registers an anonymous device profile with push token and preferences.
- */
-export async function registerDevice(
+export function registerDevice(
   request: DeviceRegisterRequest,
 ): Promise<DeviceRegisterResponse> {
-  const res = await fetch(`${BASE_URL}/api/v1/notifications/devices/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(request),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to register device: ${res.status}`);
-  }
-  return res.json();
+  return requestJson<DeviceRegisterResponse>(
+    '/api/v1/notifications/devices/register',
+    { method: 'POST', body: JSON.stringify(request) },
+    'Failed to register device',
+  );
 }
 
-/**
- * Unregisters a device installation push token.
- */
 export async function unregisterDevice(deviceId: string): Promise<boolean> {
   const res = await fetch(
-    `${BASE_URL}/api/v1/notifications/devices/${encodeURIComponent(deviceId)}`,
+    `${API_BASE_URL}/api/v1/notifications/devices/${encodeURIComponent(deviceId)}`,
     { method: 'DELETE', headers: { Accept: 'application/json' } },
   );
   return res.ok;
 }
 
-/**
- * Retrieves historical notifications and unread badge count for a device.
- */
-export async function fetchNotificationHistory(
+export function fetchNotificationHistory(
   deviceId: string,
-  unreadOnly: boolean = false,
+  unreadOnly = false,
 ): Promise<NotificationHistoryResponse> {
   const params = new URLSearchParams({
     device_id: deviceId,
     unread_only: unreadOnly ? 'true' : 'false',
   });
-  const res = await fetch(`${BASE_URL}/api/v1/notifications/history?${params.toString()}`, {
-    headers: { Accept: 'application/json' },
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch notification history: ${res.status}`);
-  }
-  return res.json();
+  return requestJson<NotificationHistoryResponse>(
+    `/api/v1/notifications/history?${params.toString()}`,
+    {},
+    'Failed to fetch notification history',
+  );
 }
 
-/**
- * Marks an in-app notification record as read.
- */
 export async function markNotificationRead(
   notificationId: string,
   deviceId?: string,
 ): Promise<boolean> {
   const params = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : '';
   const res = await fetch(
-    `${BASE_URL}/api/v1/notifications/history/${notificationId}/read${params}`,
+    `${API_BASE_URL}/api/v1/notifications/history/${notificationId}/read${params}`,
     { method: 'PATCH', headers: { Accept: 'application/json' } },
   );
   return res.ok;
 }
 
-/**
- * Manually triggers official feed synchronization and alert generation.
- */
-export async function triggerManualAlertSync(
+export function triggerManualAlertSync(
   disasterType?: DisasterType,
   sourceCode?: string,
 ): Promise<AlertSyncResponse> {
-  const res = await fetch(`${BASE_URL}/api/v1/alerts/sync`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({
-      disaster_type: disasterType || null,
-      source_code: sourceCode || null,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to trigger alert sync: ${res.status}`);
-  }
-  return res.json();
+  return requestJson<AlertSyncResponse>(
+    '/api/v1/alerts/sync',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        disaster_type: disasterType || null,
+        source_code: sourceCode || null,
+      }),
+    },
+    'Failed to trigger alert sync',
+  );
 }

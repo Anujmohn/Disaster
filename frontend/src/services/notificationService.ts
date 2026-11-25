@@ -1,17 +1,4 @@
-/**
- * Browser Notification & Web Device Registration Service
- *
- * Handles:
- * - Anonymous browser client device ID persistence via localStorage.
- * - Browser Notification API permission negotiation.
- * - Web device registration with the backend (platform: 'web').
- * - Fallbacks when running in insecure contexts (non-HTTPS) or when user denies permissions.
- */
-
-import {
-  registerDevice,
-  DeviceRegisterResponse,
-} from '../api/alertApi';
+import { DeviceRegisterResponse, registerDevice } from '../api/alertApi';
 
 const STORAGE_KEY = 'disaster_safety_device_id';
 
@@ -21,7 +8,7 @@ function getOrGenerateDeviceId(): string {
   }
   let id = localStorage.getItem(STORAGE_KEY);
   if (!id) {
-    id = 'web-' + Math.random().toString(36).substring(2, 10) + '-' + Date.now().toString(36);
+    id = `web-${Math.random().toString(36).substring(2, 10)}-${Date.now().toString(36)}`;
     localStorage.setItem(STORAGE_KEY, id);
   }
   return id;
@@ -41,16 +28,10 @@ export function setDeviceId(id: string): void {
   }
 }
 
-/**
- * Checks if browser Notification API is available in the current context.
- */
 export function isBrowserNotificationSupported(): boolean {
   return typeof window !== 'undefined' && 'Notification' in window;
 }
 
-/**
- * Gets current notification permission state ('default', 'granted', 'denied').
- */
 export function getNotificationPermission(): NotificationPermission {
   if (!isBrowserNotificationSupported()) {
     return 'denied';
@@ -58,9 +39,6 @@ export function getNotificationPermission(): NotificationPermission {
   return Notification.permission;
 }
 
-/**
- * Requests browser notification permission and registers web device with backend.
- */
 export async function initializeWebNotifications(
   userLocation?: { latitude: number; longitude: number },
 ): Promise<{
@@ -71,24 +49,22 @@ export async function initializeWebNotifications(
 
   if (isBrowserNotificationSupported()) {
     try {
-      if (Notification.permission === 'default') {
-        permission = await Notification.requestPermission();
-      } else {
-        permission = Notification.permission;
-      }
+      permission =
+        Notification.permission === 'default'
+          ? await Notification.requestPermission()
+          : Notification.permission;
     } catch (err) {
       console.warn('Error requesting browser notification permission:', err);
       permission = Notification.permission;
     }
   }
 
-  // Generate web token identifier
   if (!currentWebToken) {
     currentWebToken = `web-token-${currentDeviceId}-${Date.now().toString(36)}`;
   }
 
   try {
-    const reg = await registerDevice({
+    const registration = await registerDevice({
       device_id: currentDeviceId,
       push_token: currentWebToken,
       platform: 'web',
@@ -103,16 +79,13 @@ export async function initializeWebNotifications(
       longitude: userLocation?.longitude ?? null,
     });
 
-    return { permission, registration: reg };
+    return { permission, registration };
   } catch (err) {
     console.warn('Failed to register web device with backend:', err);
     return { permission, registration: null };
   }
 }
 
-/**
- * Displays an immediate browser notification if permitted.
- */
 export function showBrowserNotification(title: string, options?: NotificationOptions): boolean {
   if (!isBrowserNotificationSupported() || Notification.permission !== 'granted') {
     return false;

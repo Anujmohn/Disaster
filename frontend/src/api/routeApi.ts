@@ -1,15 +1,5 @@
-/**
- * Evacuation Route Calculation & Hazard Avoidance API Client
- *
- * Connects to:
- *   - POST /api/v1/routes/calculate
- */
-
+import { requestJson } from './client';
 import { GeoJSONLineString } from './disasterApi';
-
-const BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
-  'http://localhost:8000';
 
 export type RouteClassification =
   | 'ROUTE_AVAILABLE'
@@ -75,32 +65,20 @@ export interface CalculateRouteResponse {
   safety_disclaimer: string;
 }
 
-/**
- * Calculates road evacuation routes to an assessed candidate destination and analyzes hazard exposures.
- */
-export async function calculateEvacuationRoute(
+export function calculateEvacuationRoute(
   request: CalculateRouteRequest,
 ): Promise<CalculateRouteResponse> {
-  const url = `${BASE_URL}/api/v1/routes/calculate`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
+  return requestJson<CalculateRouteResponse>(
+    '/api/v1/routes/calculate',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        origin_latitude: request.origin_latitude,
+        origin_longitude: request.origin_longitude,
+        location_assessment_id: request.location_assessment_id,
+        allow_alternatives: request.allow_alternatives ?? true,
+      }),
     },
-    body: JSON.stringify({
-      origin_latitude: request.origin_latitude,
-      origin_longitude: request.origin_longitude,
-      location_assessment_id: request.location_assessment_id,
-      allow_alternatives: request.allow_alternatives ?? true,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `Failed to calculate evacuation route: ${response.status} ${response.statusText}`,
-    );
-  }
-
-  return response.json();
+    'Failed to calculate evacuation route',
+  );
 }

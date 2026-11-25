@@ -1,14 +1,3 @@
-/**
- * Browser Geolocation API Service
- *
- * Implements:
- * - Browser permission verification and request handling.
- * - Current location retrieval using navigator.geolocation.
- * - Accuracy and altitude measurement extraction.
- * - Verification of secure context (HTTPS / localhost requirement).
- * - Standardized error reporting with actionable messages.
- */
-
 import { Capacitor } from '@capacitor/core';
 import { bleChatService } from './bleChatService';
 
@@ -34,9 +23,6 @@ export interface BrowserGeolocationError {
   permanentlyDenied?: boolean;
 }
 
-/**
- * Checks if geolocation is supported and running in a secure context.
- */
 export function checkGeolocationAvailability(): { available: boolean; reason?: string } {
   if (typeof window === 'undefined' || !('geolocation' in navigator)) {
     return {
@@ -45,8 +31,7 @@ export function checkGeolocationAvailability(): { available: boolean; reason?: s
     };
   }
 
-  // Modern browsers restrict geolocation to secure contexts (HTTPS or localhost)
-  if (typeof window !== 'undefined' && window.isSecureContext === false) {
+  if (window.isSecureContext === false) {
     return {
       available: false,
       reason: 'Geolocation requires a secure context (HTTPS or localhost).',
@@ -56,55 +41,47 @@ export function checkGeolocationAvailability(): { available: boolean; reason?: s
   return { available: true };
 }
 
-/**
- * Retrieves the current GPS/device coordinates via the browser Geolocation API.
- * Uses high accuracy, a 15-second timeout, and max 10-second cache.
- */
-export function getCurrentBrowserLocation(): Promise<BrowserLocationResult> {
-  return new Promise(async (resolve, reject) => {
-    const isNative = Capacitor.isNativePlatform();
+export async function getCurrentBrowserLocation(): Promise<BrowserLocationResult> {
+  const isNative = Capacitor.isNativePlatform();
 
-    if (isNative) {
-      const permStatus = await bleChatService.requestLocationPermission();
-      if (!permStatus.granted) {
-        const err: BrowserGeolocationError = {
-          type: 'PERMISSION_DENIED',
-          permanentlyDenied: permStatus.permanentlyDenied,
-          message: permStatus.permanentlyDenied
-            ? 'Location permission was denied. Please enable Location in Android App Settings.'
-            : 'Location permission is required to retrieve your GPS coordinates.',
-        };
-        return reject(err);
-      }
-
-      if (!permStatus.isLocationServicesEnabled) {
-        const err: BrowserGeolocationError = {
-          type: 'POSITION_UNAVAILABLE',
-          message: 'Device Location (GPS) is turned off. Please enable Location in Android Settings.',
-        };
-        return reject(err);
-      }
+  if (isNative) {
+    const permStatus = await bleChatService.requestLocationPermission();
+    if (!permStatus.granted) {
+      throw {
+        type: 'PERMISSION_DENIED',
+        permanentlyDenied: permStatus.permanentlyDenied,
+        message: permStatus.permanentlyDenied
+          ? 'Location permission was denied. Please enable Location in Android App Settings.'
+          : 'Location permission is required to retrieve your GPS coordinates.',
+      } satisfies BrowserGeolocationError;
     }
 
-    const check = checkGeolocationAvailability();
-    if (!check.available) {
-      const err: BrowserGeolocationError = {
-        type: typeof window !== 'undefined' && window.isSecureContext === false ? 'INSECURE_CONTEXT' : 'UNSUPPORTED',
-        message: check.reason ?? 'Geolocation unavailable.',
-      };
-      return reject(err);
+    if (!permStatus.isLocationServicesEnabled) {
+      throw {
+        type: 'POSITION_UNAVAILABLE',
+        message: 'Device Location (GPS) is turned off. Please enable Location in Android Settings.',
+      } satisfies BrowserGeolocationError;
     }
+  }
 
+  const check = checkGeolocationAvailability();
+  if (!check.available) {
+    throw {
+      type: typeof window !== 'undefined' && window.isSecureContext === false ? 'INSECURE_CONTEXT' : 'UNSUPPORTED',
+      message: check.reason ?? 'Geolocation unavailable.',
+    } satisfies BrowserGeolocationError;
+  }
+
+  return new Promise((resolve, reject) => {
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        const result: BrowserLocationResult = {
+        resolve({
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
           accuracy_m: position.coords.accuracy ?? null,
           altitude_m: position.coords.altitude ?? null,
           captured_at: new Date(position.timestamp).toISOString(),
-        };
-        resolve(result);
+        });
       },
       (geoError) => {
         let type: GeolocationErrorType = 'UNKNOWN';
@@ -127,8 +104,7 @@ export function getCurrentBrowserLocation(): Promise<BrowserLocationResult> {
             break;
         }
 
-        const err: BrowserGeolocationError = { type, message };
-        reject(err);
+        reject({ type, message } satisfies BrowserGeolocationError);
       },
       {
         enableHighAccuracy: true,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import ChatScreen from './screens/ChatScreen';
 import MobileChatScreen from './screens/MobileChatScreen';
@@ -6,28 +6,38 @@ import LocationScreen from './screens/LocationScreen';
 import MapScreen from './screens/MapScreen';
 
 type Tab = 'map' | 'location' | 'chat';
+type BackendStatus = 'checking' | 'connected' | 'disconnected';
 
 export default function App(): React.JSX.Element {
   const isNative = Capacitor.isNativePlatform();
   const [activeTab, setActiveTab] = useState<Tab>('map');
-  const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking');
+  const [backendStatus, setBackendStatus] = useState<BackendStatus>('checking');
 
   useEffect(() => {
-    // Check backend health
-    fetch('/health')
-      .then((res) => {
-        if (res.ok) setBackendStatus('connected');
-        else setBackendStatus('disconnected');
-      })
-      .catch(() => {
-        // Fallback check direct localhost:8000
-        fetch('http://localhost:8000/health')
-          .then((res) => {
-            if (res.ok) setBackendStatus('connected');
-            else setBackendStatus('disconnected');
-          })
-          .catch(() => setBackendStatus('disconnected'));
-      });
+    let cancelled = false;
+
+    async function checkHealth() {
+      const endpoints = ['/health', 'http://localhost:8000/health'];
+      for (const url of endpoints) {
+        try {
+          const res = await fetch(url);
+          if (!cancelled) {
+            setBackendStatus(res.ok ? 'connected' : 'disconnected');
+          }
+          return;
+        } catch {
+          // Try direct localhost fallback if proxy path is unavailable.
+        }
+      }
+      if (!cancelled) {
+        setBackendStatus('disconnected');
+      }
+    }
+
+    checkHealth();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   if (isNative) {
@@ -44,7 +54,7 @@ export default function App(): React.JSX.Element {
         <header className="apk-top-bar">
           <span className="apk-top-title">Disaster Safety</span>
           <span className={`apk-status-pill ${backendStatus}`}>
-            {backendStatus === 'connected' ? 'Online' : backendStatus === 'checking' ? 'Checking' : 'Offline'}
+            {backendStatus === 'connected' ? 'Live' : backendStatus === 'checking' ? 'Connecting…' : 'Offline'}
           </span>
         </header>
 
@@ -69,7 +79,7 @@ export default function App(): React.JSX.Element {
             className={`apk-nav-btn ${activeTab === 'location' ? 'active' : ''}`}
             onClick={() => setActiveTab('location')}
           >
-            Location
+            My Location
           </button>
           <button
             type="button"
@@ -78,7 +88,7 @@ export default function App(): React.JSX.Element {
             className="apk-nav-btn"
             onClick={() => setActiveTab('chat')}
           >
-            Offline Chat
+            Nearby Chat
           </button>
         </nav>
       </div>
@@ -87,25 +97,23 @@ export default function App(): React.JSX.Element {
 
   return (
     <div id="root">
-      {/* Main Web Application Header */}
       <header className="app-header">
         <div className="brand-title">
           <span>🛡️</span>
-          <span>Disaster Safety Platform</span>
+          <span>Disaster Safety</span>
           <span
             className="badge"
             style={{
-              fontSize: '0.7rem',
+              fontSize: '0.72rem',
               backgroundColor: backendStatus === 'connected' ? '#DCFCE7' : backendStatus === 'checking' ? '#FEF9C3' : '#FEE2E2',
               color: backendStatus === 'connected' ? '#166534' : backendStatus === 'checking' ? '#854D0E' : '#991B1B',
               marginLeft: '8px',
             }}
           >
-            {backendStatus === 'connected' ? '● Backend Live' : backendStatus === 'checking' ? '○ Connecting...' : '✕ Offline'}
+            {backendStatus === 'connected' ? '● Live Updates' : backendStatus === 'checking' ? '○ Connecting…' : '✕ Offline Mode'}
           </span>
         </div>
 
-        {/* Tab Navigation */}
         <nav className="nav-tabs" role="tablist">
           <button
             role="tab"
@@ -113,7 +121,7 @@ export default function App(): React.JSX.Element {
             className={`nav-tab-btn ${activeTab === 'map' ? 'active' : ''}`}
             onClick={() => setActiveTab('map')}
           >
-            🗺️ Disaster Map
+            🗺️ Safety Map
           </button>
           <button
             role="tab"
@@ -121,7 +129,7 @@ export default function App(): React.JSX.Element {
             className={`nav-tab-btn ${activeTab === 'location' ? 'active' : ''}`}
             onClick={() => setActiveTab('location')}
           >
-            📍 GPS Location
+            📍 My Location
           </button>
           <button
             role="tab"
@@ -129,12 +137,11 @@ export default function App(): React.JSX.Element {
             className={`nav-tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
             onClick={() => setActiveTab('chat')}
           >
-            💬 Offline Chat
+            💬 Nearby Chat
           </button>
         </nav>
       </header>
 
-      {/* Screen Container */}
       <main className="screen-container">
         {activeTab === 'map' ? <MapScreen /> : activeTab === 'location' ? <LocationScreen /> : <ChatScreen />}
       </main>

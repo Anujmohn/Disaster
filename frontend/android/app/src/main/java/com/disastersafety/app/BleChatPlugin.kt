@@ -28,6 +28,9 @@ import org.json.JSONObject
 import java.nio.charset.StandardCharsets
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 @SuppressLint("MissingPermission")
 @CapacitorPlugin(
@@ -74,6 +77,13 @@ class BleChatPlugin : Plugin() {
         const val MAX_DIRECT_CONNECTIONS = 4
         private const val DEVICE_TIMEOUT_MS = 25000L
         private const val MAX_CONNECT_RETRIES = 2
+        private const val GATT_CONNECT_TIMEOUT_MS = 12_000L
+        private const val BLE_TX_TIMEOUT_MS = 3_000L
+        private const val RX_CHUNK_TIMEOUT_MS = 10_000L
+        private const val CHUNK_MAGIC_0 = 0xAA.toByte()
+        private const val CHUNK_MAGIC_1 = 0x55.toByte()
+        private const val CHUNK_HEADER_SIZE = 5
+        private const val DEVICE_EMIT_THROTTLE_MS = 1200L
 
         // Multi-hop routing parameters
         const val DEFAULT_HOP_LIMIT = 5
@@ -127,6 +137,40 @@ class BleChatPlugin : Plugin() {
     private val connectionStates = ConcurrentHashMap<String, String>() // address -> "connecting"|"connected"|"failed"|"disconnected"
     private val connectionRetries = ConcurrentHashMap<String, Int>()
     private val manualDisconnects = ConcurrentHashMap.newKeySet<String>()
+    private val addressToDeviceId = ConcurrentHashMap<String, String>()
+    private val deviceIdToAddress = ConcurrentHashMap<String, String>()
+    private val peerMtuMap = ConcurrentHashMap<String, Int>()
+    private val gattReadyAddresses = ConcurrentHashMap.newKeySet<String>()
+    private val subscribedServerClients = ConcurrentHashMap.newKeySet<String>()
+    private val bleTxQueues = ConcurrentHashMap<String, ConcurrentLinkedQueue<ByteArray>>()
+    private val bleTxInFlight = ConcurrentHashMap<String, AtomicBoolean>()
+    private val bleTxTimeoutRunnables = ConcurrentHashMap<String, Runnable>()
+    private val connectionTimeouts = ConcurrentHashMap<String, Runnable>()
+    private val rxReassemblyBuffers = ConcurrentHashMap<String, ChunkAssemblyBuffer>()
+    private val txSequenceGenerator = AtomicInteger(0)
+    private val lastDeviceEmitTimes = ConcurrentHashMap<String, Long>()
+    private var lastGlobalEmitTime = 0L
+
+    private data class ChunkAssemblyBuffer(
+        val totalChunks: Int,
+        val chunks: Array<ByteArray?>,
+        val createdAt: Long
+    ) {
+        var receivedCount: Int = 0
+    }
+
+    private val staleCleanupRunnable = object : Runnable {
+        override fun run() {
+            if (isScanning) {
+                val beforeSize = discoveredDevices.size
+                cleanStaleDevices()
+                if (discoveredDevices.size != beforeSize) {
+                    emitDiscoveredDevices(force = true)
+                }
+                mainHandler.postDelayed(this, 5_000L)
+            }
+        }
+    }
 
     // Bounded in-memory duplicate suppression cache (stores up to 500 recent message IDs)
     private val processedMessageIds: MutableSet<String> = Collections.synchronizedSet(
@@ -166,6 +210,7 @@ class BleChatPlugin : Plugin() {
                 val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
                 if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
                     Log.w(TAG, "Bluetooth turned off while app/service running")
+                    resetBleStateOnAdapterOff()
                     if (BleMeshForegroundService.isRunning) {
                         BleMeshForegroundService.updateStatus(context, 0, "Bluetooth disabled")
                     }
@@ -183,6 +228,7 @@ class BleChatPlugin : Plugin() {
                     }
                 } else if (state == BluetoothAdapter.STATE_ON) {
                     Log.i(TAG, "Bluetooth turned back on")
+                    refreshBluetoothAdapter()
                     if (BleMeshForegroundService.isRunning) {
                         startDiscoveryInternal()
                         updateBackgroundMeshNotification()
@@ -202,6 +248,60 @@ class BleChatPlugin : Plugin() {
                 }
             }
         }
+    }
+
+    private fun refreshBluetoothAdapter(): BluetoothAdapter? {
+        if (bluetoothAdapter == null) {
+            try {
+                val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+                bluetoothAdapter = manager?.adapter
+            } catch (e: Exception) {
+                Log.e(TAG, "Error refreshing BluetoothAdapter: ${e.message}")
+            }
+        }
+        return bluetoothAdapter
+    }
+
+    private fun resetBleStateOnAdapterOff() {
+        isScanning = false
+        isAdvertising = false
+        bluetoothLeScanner = null
+        bluetoothLeAdvertiser = null
+        mainHandler.removeCallbacks(staleCleanupRunnable)
+
+        for ((addr, runnable) in connectionTimeouts) {
+            mainHandler.removeCallbacks(runnable)
+        }
+        connectionTimeouts.clear()
+
+        for (gatt in clientGattMap.values) {
+            try {
+                gatt.close()
+            } catch (_: Exception) {}
+        }
+        clientGattMap.clear()
+        serverClientDevices.clear()
+        connectionStates.clear()
+        connectionRetries.clear()
+        gattReadyAddresses.clear()
+        subscribedServerClients.clear()
+        peerMtuMap.clear()
+        bleTxQueues.clear()
+        bleTxInFlight.clear()
+        for ((_, runnable) in bleTxTimeoutRunnables) {
+            mainHandler.removeCallbacks(runnable)
+        }
+        bleTxTimeoutRunnables.clear()
+        rxReassemblyBuffers.clear()
+
+        try {
+            gattServer?.close()
+        } catch (_: Exception) {}
+        gattServer = null
+
+        discoveredDevices.clear()
+        emitDiscoveredDevices(force = true)
+        notifyConnectionState("disconnected", null, "Bluetooth turned off")
     }
 
     override fun load() {
@@ -720,8 +820,9 @@ class BleChatPlugin : Plugin() {
 
     @PluginMethod
     fun checkAvailability(call: PluginCall) {
+        val adapter = refreshBluetoothAdapter()
         val hasBle = context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
-        val isEnabled = bluetoothAdapter?.isEnabled == true
+        val isEnabled = adapter?.isEnabled == true
         val hasPermissions = checkBlePermissions()
 
         val ret = JSObject()
@@ -875,9 +976,27 @@ class BleChatPlugin : Plugin() {
         }
     }
 
+    private fun validateBleReadyForDiscovery(): String? {
+        if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
+            return "Bluetooth Low Energy hardware is not supported on this device."
+        }
+        val adapter = refreshBluetoothAdapter()
+        if (adapter == null || !adapter.isEnabled) {
+            return "Bluetooth is not enabled on this device."
+        }
+        if (!checkBlePermissions()) {
+            return "Required Bluetooth permissions are not granted."
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && !isSystemLocationEnabled()) {
+            return "Location services must be turned on for Bluetooth scanning on Android 11 and older."
+        }
+        return null
+    }
+
     private fun startDiscoveryInternal() {
-        if (!checkBlePermissions() || bluetoothAdapter?.isEnabled != true) {
-            Log.w(TAG, "Cannot start BLE discovery: missing permissions or Bluetooth disabled.")
+        val error = validateBleReadyForDiscovery()
+        if (error != null) {
+            Log.w(TAG, "Cannot start BLE discovery: $error")
             return
         }
         ensureGattServerStarted()
@@ -910,12 +1029,9 @@ class BleChatPlugin : Plugin() {
 
     @PluginMethod
     fun startAdvertising(call: PluginCall) {
-        if (bluetoothAdapter == null || bluetoothAdapter?.isEnabled != true) {
-            call.reject("Bluetooth is not enabled on this device.")
-            return
-        }
-        if (!checkBlePermissions()) {
-            call.reject("Required Bluetooth permissions are not granted.")
+        val error = validateBleReadyForDiscovery()
+        if (error != null) {
+            call.reject(error)
             return
         }
         ensureGattServerStarted()
@@ -934,16 +1050,17 @@ class BleChatPlugin : Plugin() {
 
     @PluginMethod
     fun startScanning(call: PluginCall) {
-        if (bluetoothAdapter == null || bluetoothAdapter?.isEnabled != true) {
-            call.reject("Bluetooth is not enabled on this device.")
-            return
-        }
-        if (!checkBlePermissions()) {
-            call.reject("Required Bluetooth permissions are not granted.")
+        val error = validateBleReadyForDiscovery()
+        if (error != null) {
+            call.reject(error)
             return
         }
         ensureGattServerStarted()
         startScanningInternal()
+        if (!isScanning) {
+            call.reject("Bluetooth LE scanner failed to initialize.")
+            return
+        }
         val ret = JSObject()
         ret.put("success", true)
         ret.put("isScanning", isScanning)
@@ -963,16 +1080,17 @@ class BleChatPlugin : Plugin() {
 
     @PluginMethod
     fun startDiscovery(call: PluginCall) {
-        if (bluetoothAdapter == null || bluetoothAdapter?.isEnabled != true) {
-            call.reject("Bluetooth is not enabled on this device.")
-            return
-        }
-        if (!checkBlePermissions()) {
-            call.reject("Required Bluetooth permissions are not granted.")
+        val error = validateBleReadyForDiscovery()
+        if (error != null) {
+            call.reject(error)
             return
         }
 
         startDiscoveryInternal()
+        if (!isScanning) {
+            call.reject("Bluetooth LE scanner could not be started on this device.")
+            return
+        }
 
         val ret = JSObject()
         ret.put("success", true)
@@ -1031,7 +1149,7 @@ class BleChatPlugin : Plugin() {
 
         for (addr in uniqueAddresses) {
             val devInfo = discoveredDevices[addr]
-            val devId = devInfo?.deviceId ?: ("NODE-" + addr.replace(":", "").takeLast(6))
+            val devId = addressToDeviceId[addr] ?: devInfo?.deviceId ?: ("NODE-" + addr.replace(":", "").takeLast(6))
             val peerInfo = keyStorage.getPeer(devId)
             val obj = JSONObject()
             obj.put("address", addr)
@@ -1095,12 +1213,18 @@ class BleChatPlugin : Plugin() {
             return
         }
 
+        if (connectionStates[address] == "connecting") {
+            call.resolve(JSObject().put("status", "connecting").put("address", address).put("message", "Connection already in progress."))
+            return
+        }
+
         if (getTotalConnectedCount() >= MAX_DIRECT_CONNECTIONS) {
             call.reject("Direct connection limit reached ($MAX_DIRECT_CONNECTIONS devices max). Disconnect an existing peer first.")
             return
         }
 
-        if (bluetoothAdapter == null || bluetoothAdapter?.isEnabled != true) {
+        val adapter = refreshBluetoothAdapter()
+        if (adapter == null || !adapter.isEnabled) {
             call.reject("Bluetooth is not enabled.")
             return
         }
@@ -1114,9 +1238,24 @@ class BleChatPlugin : Plugin() {
         connectGattInternal(address, call)
     }
 
+    private fun cancelConnectionTimeout(address: String) {
+        connectionTimeouts.remove(address)?.let { mainHandler.removeCallbacks(it) }
+    }
+
+    private fun cleanupPeerGattState(address: String) {
+        cancelConnectionTimeout(address)
+        gattReadyAddresses.remove(address)
+        subscribedServerClients.remove(address)
+        peerMtuMap.remove(address)
+        bleTxQueues.remove(address)?.clear()
+        bleTxInFlight.remove(address)?.set(false)
+        bleTxTimeoutRunnables.remove(address)?.let { mainHandler.removeCallbacks(it) }
+    }
+
     private fun connectGattInternal(address: String, call: PluginCall? = null) {
+        val adapter = refreshBluetoothAdapter()
         val remoteDevice = try {
-            bluetoothAdapter?.getRemoteDevice(address)
+            adapter?.getRemoteDevice(address)
         } catch (e: Exception) {
             call?.reject("Invalid device address: $address", e)
             return
@@ -1127,10 +1266,36 @@ class BleChatPlugin : Plugin() {
             return
         }
 
-        clientGattMap.remove(address)?.close()
+        cleanupPeerGattState(address)
+        clientGattMap.remove(address)?.let { existing ->
+            try {
+                existing.disconnect()
+                existing.close()
+            } catch (_: Exception) {}
+        }
+
+        ensureGattServerStarted()
 
         connectionStates[address] = "connecting"
         notifyConnectionState("connecting", address, "Connecting as GATT Client...")
+
+        val timeoutRunnable = Runnable {
+            if (connectionStates[address] == "connecting" && !isDeviceConnectedAndReady(address)) {
+                Log.w(TAG, "GATT connection timeout for $address after ${GATT_CONNECT_TIMEOUT_MS}ms")
+                clientGattMap.remove(address)?.let { stuck ->
+                    try {
+                        stuck.disconnect()
+                        stuck.close()
+                    } catch (_: Exception) {}
+                }
+                cleanupPeerGattState(address)
+                connectionStates[address] = "failed"
+                notifyConnectionState("failed", address, "Connection timed out. Make sure the other phone has Nearby Chat open.")
+                emitDiscoveredDevices(force = true)
+            }
+        }
+        connectionTimeouts[address] = timeoutRunnable
+        mainHandler.postDelayed(timeoutRunnable, GATT_CONNECT_TIMEOUT_MS)
 
         try {
             val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -1138,9 +1303,18 @@ class BleChatPlugin : Plugin() {
             } else {
                 remoteDevice.connectGatt(context, false, clientGattCallback)
             }
+            if (gatt == null) {
+                cancelConnectionTimeout(address)
+                connectionStates[address] = "failed"
+                notifyConnectionState("failed", address, "Bluetooth GATT client could not be created")
+                call?.reject("Failed to create GATT client connection.")
+                return
+            }
             clientGattMap[address] = gatt
+            Log.i(TAG, "Initiated BLE GATT connection to $address")
             call?.resolve(JSObject().put("status", "connecting").put("address", address))
         } catch (e: Exception) {
+            cancelConnectionTimeout(address)
             Log.e(TAG, "Error connecting GATT to $address: ${e.message}", e)
             connectionStates[address] = "failed"
             notifyConnectionState("failed", address, e.message ?: "Connection error")
@@ -1158,6 +1332,7 @@ class BleChatPlugin : Plugin() {
 
         manualDisconnects.add(address)
         connectionRetries.remove(address)
+        cleanupPeerGattState(address)
 
         var disconnected = false
 
@@ -1182,6 +1357,7 @@ class BleChatPlugin : Plugin() {
 
         connectionStates[address] = "disconnected"
         notifyConnectionState("disconnected", address, "Disconnected by user")
+        emitDiscoveredDevices(force = true)
         call.resolve(JSObject().put("success", true).put("address", address).put("wasConnected", disconnected))
     }
 
@@ -1189,6 +1365,7 @@ class BleChatPlugin : Plugin() {
     fun disconnectAll(call: PluginCall) {
         for (addr in clientGattMap.keys) {
             manualDisconnects.add(addr)
+            cleanupPeerGattState(addr)
             clientGattMap.remove(addr)?.let {
                 try {
                     it.disconnect()
@@ -1200,6 +1377,7 @@ class BleChatPlugin : Plugin() {
         }
         for (addr in serverClientDevices.keys) {
             manualDisconnects.add(addr)
+            cleanupPeerGattState(addr)
             serverClientDevices.remove(addr)?.let {
                 try {
                     gattServer?.cancelConnection(it)
@@ -1211,6 +1389,7 @@ class BleChatPlugin : Plugin() {
         connectionStates.clear()
         connectionRetries.clear()
         notifyConnectionState("disconnected", null, "All peers disconnected")
+        emitDiscoveredDevices(force = true)
         call.resolve(JSObject().put("success", true))
     }
 
@@ -1395,71 +1574,165 @@ class BleChatPlugin : Plugin() {
         emitMessageStatusChanged(messageId, initialStatus, 0)
     }
 
+    private fun getEffectivePayloadLimit(address: String): Int {
+        val mtu = peerMtuMap[address] ?: 23
+        return (mtu - 3).coerceIn(20, 509)
+    }
+
+    private fun framePacketForBle(address: String, bytes: ByteArray): List<ByteArray> {
+        val maxPayload = getEffectivePayloadLimit(address)
+        if (bytes.size <= maxPayload && !(bytes.size >= 2 && bytes[0] == CHUNK_MAGIC_0 && bytes[1] == CHUNK_MAGIC_1)) {
+            return listOf(bytes)
+        }
+        val chunkPayloadSize = (maxPayload - CHUNK_HEADER_SIZE).coerceAtLeast(15)
+        val totalChunks = ((bytes.size + chunkPayloadSize - 1) / chunkPayloadSize).coerceAtLeast(1)
+        if (totalChunks > 255) {
+            Log.e(TAG, "Packet too large to chunk over BLE (${bytes.size} bytes, $totalChunks chunks)")
+            return emptyList()
+        }
+        val seq = txSequenceGenerator.getAndIncrement() and 0xFF
+        val frames = ArrayList<ByteArray>(totalChunks)
+        var offset = 0
+        for (idx in 0 until totalChunks) {
+            val end = minOf(offset + chunkPayloadSize, bytes.size)
+            val sliceLen = end - offset
+            val frame = ByteArray(CHUNK_HEADER_SIZE + sliceLen)
+            frame[0] = CHUNK_MAGIC_0
+            frame[1] = CHUNK_MAGIC_1
+            frame[2] = seq.toByte()
+            frame[3] = idx.toByte()
+            frame[4] = totalChunks.toByte()
+            System.arraycopy(bytes, offset, frame, CHUNK_HEADER_SIZE, sliceLen)
+            frames.add(frame)
+            offset = end
+        }
+        return frames
+    }
+
     private fun sendBytesToPeer(address: String, bytes: ByteArray): Boolean {
-        // 1. Check if connected as Client
+        if (!isDeviceConnected(address)) {
+            Log.d(TAG, "Cannot send BLE bytes to $address: peer not connected/ready")
+            return false
+        }
+        val frames = framePacketForBle(address, bytes)
+        if (frames.isEmpty()) return false
+
+        val queue = bleTxQueues.computeIfAbsent(address) { ConcurrentLinkedQueue() }
+        for (frame in frames) {
+            queue.add(frame)
+        }
+        mainHandler.post { drainBleTxQueue(address) }
+        return true
+    }
+
+    private fun drainBleTxQueue(address: String) {
+        val queue = bleTxQueues[address] ?: return
+        if (queue.isEmpty()) return
+
+        val inFlight = bleTxInFlight.computeIfAbsent(address) { AtomicBoolean(false) }
+        if (!inFlight.compareAndSet(false, true)) return
+
+        val nextFrame = queue.poll()
+        if (nextFrame == null) {
+            inFlight.set(false)
+            return
+        }
+
+        val timeoutRunnable = Runnable {
+            if (inFlight.compareAndSet(true, false)) {
+                Log.w(TAG, "BLE TX watchdog timeout for $address; advancing queue")
+                drainBleTxQueue(address)
+            }
+        }
+        bleTxTimeoutRunnables.put(address, timeoutRunnable)?.let { mainHandler.removeCallbacks(it) }
+        mainHandler.postDelayed(timeoutRunnable, BLE_TX_TIMEOUT_MS)
+
+        var dispatched = false
         val clientGatt = clientGattMap[address]
-        if (clientGatt != null) {
+        if (clientGatt != null && gattReadyAddresses.contains(address)) {
             val service = clientGatt.getService(SERVICE_UUID)
             val characteristic = service?.getCharacteristic(CHARACTERISTIC_UUID)
             if (characteristic != null) {
-                return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    val res = clientGatt.writeCharacteristic(characteristic, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-                    res == BluetoothStatusCodes.SUCCESS
-                } else {
-                    @Suppress("DEPRECATION")
-                    characteristic.value = bytes
-                    @Suppress("DEPRECATION")
-                    characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                    @Suppress("DEPRECATION")
-                    clientGatt.writeCharacteristic(characteristic)
+                dispatched = try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        clientGatt.writeCharacteristic(characteristic, nextFrame, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
+                    } else {
+                        @Suppress("DEPRECATION")
+                        characteristic.value = nextFrame
+                        @Suppress("DEPRECATION")
+                        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                        @Suppress("DEPRECATION")
+                        clientGatt.writeCharacteristic(characteristic)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Client writeCharacteristic exception for $address: ${e.message}")
+                    false
+                }
+            }
+        } else {
+            val serverDev = serverClientDevices[address]
+            val server = gattServer
+            if (server != null && serverDev != null) {
+                val service = server.getService(SERVICE_UUID)
+                val characteristic = service?.getCharacteristic(CHARACTERISTIC_UUID)
+                if (characteristic != null) {
+                    dispatched = try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            server.notifyCharacteristicChanged(serverDev, characteristic, false, nextFrame) == BluetoothStatusCodes.SUCCESS
+                        } else {
+                            @Suppress("DEPRECATION")
+                            characteristic.value = nextFrame
+                            @Suppress("DEPRECATION")
+                            server.notifyCharacteristicChanged(serverDev, characteristic, false)
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Server notifyCharacteristicChanged exception for $address: ${e.message}")
+                        false
+                    }
                 }
             }
         }
 
-        // 2. Check if connected as Server
-        val serverDev = serverClientDevices[address]
-        val server = gattServer
-        if (server != null && serverDev != null) {
-            val service = server.getService(SERVICE_UUID)
-            val characteristic = service?.getCharacteristic(CHARACTERISTIC_UUID)
-            if (characteristic != null) {
-                return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    val res = server.notifyCharacteristicChanged(serverDev, characteristic, false, bytes)
-                    res == BluetoothStatusCodes.SUCCESS
-                } else {
-                    @Suppress("DEPRECATION")
-                    characteristic.value = bytes
-                    @Suppress("DEPRECATION")
-                    server.notifyCharacteristicChanged(serverDev, characteristic, false)
-                }
-            }
+        if (!dispatched) {
+            bleTxTimeoutRunnables.remove(address)?.let { mainHandler.removeCallbacks(it) }
+            inFlight.set(false)
+            Log.w(TAG, "Failed to dispatch BLE frame to $address (remaining=${queue.size})")
         }
+    }
 
-        return false
+    private fun onBleTxFrameCompleted(address: String) {
+        bleTxTimeoutRunnables.remove(address)?.let { mainHandler.removeCallbacks(it) }
+        bleTxInFlight[address]?.set(false)
+        mainHandler.post { drainBleTxQueue(address) }
     }
 
     private fun isDeviceConnected(address: String): Boolean {
-        return clientGattMap.containsKey(address) || serverClientDevices.containsKey(address)
+        return gattReadyAddresses.contains(address) || serverClientDevices.containsKey(address)
+    }
+
+    private fun isDeviceConnectedAndReady(address: String): Boolean {
+        return isDeviceConnected(address)
     }
 
     // -------------------------------------------------------------------------
     // BLE Advertising Implementation
     // -------------------------------------------------------------------------
 
-    private fun startAdvertisingInternal() {
+    private fun startAdvertisingInternal(includeScanResponse: Boolean = true) {
         if (isAdvertising) return
         if (!checkBlePermissions()) {
             Log.w(TAG, "Cannot start BLE advertising: missing permissions.")
             return
         }
-        val advertiser = bluetoothAdapter?.bluetoothLeAdvertiser ?: run {
+        val adapter = refreshBluetoothAdapter()
+        val advertiser = adapter?.bluetoothLeAdvertiser ?: run {
             Log.w(TAG, "BluetoothLeAdvertiser not supported on this chipset.")
             return
         }
         bluetoothLeAdvertiser = advertiser
 
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(true)
             .setTimeout(0)
@@ -1472,11 +1745,25 @@ class BleChatPlugin : Plugin() {
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
             .addServiceUuid(serviceUuid)
-            .addServiceData(serviceUuid, deviceIdBytes)
             .build()
 
+        val scanResponse = if (includeScanResponse) {
+            AdvertiseData.Builder()
+                .setIncludeDeviceName(false)
+                .setIncludeTxPowerLevel(false)
+                .addServiceData(serviceUuid, deviceIdBytes)
+                .build()
+        } else {
+            null
+        }
+
         try {
-            advertiser.startAdvertising(settings, data, advertiseCallback)
+            if (scanResponse != null) {
+                advertiser.startAdvertising(settings, data, scanResponse, advertiseCallback)
+            } else {
+                advertiser.startAdvertising(settings, data, advertiseCallback)
+            }
+            Log.i(TAG, "BLE Advertising requested for $localDeviceId (scanResponse=$includeScanResponse)")
         } catch (e: Exception) {
             Log.e(TAG, "startAdvertising exception: ${e.message}", e)
         }
@@ -1499,8 +1786,24 @@ class BleChatPlugin : Plugin() {
         }
 
         override fun onStartFailure(errorCode: Int) {
+            if (errorCode == ADVERTISE_FAILED_ALREADY_STARTED) {
+                isAdvertising = true
+                Log.i(TAG, "BLE Advertising already running for node $localDeviceId")
+                return
+            }
             isAdvertising = false
-            Log.e(TAG, "BLE Advertising failed with error code: $errorCode")
+            val reason = when (errorCode) {
+                ADVERTISE_FAILED_DATA_TOO_LARGE -> "Advertisement payload too large"
+                ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "Too many active BLE advertisers"
+                ADVERTISE_FAILED_INTERNAL_ERROR -> "Bluetooth internal advertising error"
+                ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> "BLE peripheral advertising unsupported on this device"
+                else -> "Advertising failed (error $errorCode)"
+            }
+            Log.e(TAG, "BLE Advertising failed: $reason (code=$errorCode)")
+            if (errorCode == ADVERTISE_FAILED_DATA_TOO_LARGE) {
+                Log.i(TAG, "Retrying BLE advertising without scanResponse...")
+                mainHandler.postDelayed({ startAdvertisingInternal(includeScanResponse = false) }, 200)
+            }
         }
     }
 
@@ -1510,11 +1813,12 @@ class BleChatPlugin : Plugin() {
 
     private fun startScanningInternal() {
         if (isScanning) return
-        if (!checkBlePermissions()) {
-            Log.w(TAG, "Cannot start BLE scanning: missing permissions.")
+        val readyError = validateBleReadyForDiscovery()
+        if (readyError != null) {
+            Log.w(TAG, "Cannot start BLE scanning: $readyError")
             return
         }
-        val scanner = bluetoothAdapter?.bluetoothLeScanner ?: run {
+        val scanner = refreshBluetoothAdapter()?.bluetoothLeScanner ?: run {
             Log.w(TAG, "BluetoothLeScanner not available.")
             return
         }
@@ -1524,20 +1828,33 @@ class BleChatPlugin : Plugin() {
             .setServiceUuid(ParcelUuid(SERVICE_UUID))
             .build()
 
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
-            .build()
+        val scanSettingsBuilder = ScanSettings.Builder()
+            .setScanMode(
+                if (BleMeshForegroundService.isRunning) ScanSettings.SCAN_MODE_BALANCED
+                else ScanSettings.SCAN_MODE_LOW_LATENCY
+            )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            scanSettingsBuilder
+                .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+        }
 
         try {
-            scanner.startScan(listOf(filter), settings, scanCallback)
+            scanner.startScan(listOf(filter), scanSettingsBuilder.build(), scanCallback)
             isScanning = true
+            mainHandler.removeCallbacks(staleCleanupRunnable)
+            mainHandler.postDelayed(staleCleanupRunnable, 5_000L)
             Log.i(TAG, "BLE Scanning started for service: $SERVICE_UUID")
         } catch (e: Exception) {
+            isScanning = false
             Log.e(TAG, "startScan exception: ${e.message}", e)
+            emitDiscoveryError("Bluetooth scan failed to start: ${e.message}")
         }
     }
 
     private fun stopScanningInternal() {
+        mainHandler.removeCallbacks(staleCleanupRunnable)
         if (!isScanning) return
         try {
             bluetoothLeScanner?.stopScan(scanCallback)
@@ -1547,35 +1864,100 @@ class BleChatPlugin : Plugin() {
         isScanning = false
     }
 
+    private fun handleScanResult(result: ScanResult) {
+        val record = result.scanRecord ?: return
+        val device = result.device ?: return
+        val addr = device.address ?: return
+
+        val serviceData = record.getServiceData(ParcelUuid(SERVICE_UUID))
+        val advertisedPeerId = if (serviceData != null && serviceData.isNotEmpty()) {
+            String(serviceData, StandardCharsets.UTF_8).trim()
+        } else {
+            null
+        }
+        val peerId = advertisedPeerId?.takeIf { it.isNotEmpty() }
+            ?: addressToDeviceId[addr]
+            ?: ("NODE-" + addr.replace(":", "").takeLast(6))
+
+        if (peerId == localDeviceId) return
+
+        if (advertisedPeerId != null && advertisedPeerId.isNotEmpty()) {
+            addressToDeviceId[addr] = advertisedPeerId
+            deviceIdToAddress[advertisedPeerId] = addr
+        }
+
+        val rawName = try {
+            record.deviceName?.trim()?.takeIf { it.isNotEmpty() }
+                ?: device.name?.trim()?.takeIf { it.isNotEmpty() }
+        } catch (_: Exception) {
+            null
+        }
+        val displayName = if (rawName != null && rawName != peerId) "$peerId ($rawName)" else peerId
+
+        val now = System.currentTimeMillis()
+        val existing = discoveredDevices[addr]
+        val isNewDevice = existing == null
+        val rssiDelta = if (existing != null) kotlin.math.abs(existing.rssi - result.rssi) else 999
+
+        val discovered = DiscoveredDevice(
+            deviceId = peerId,
+            deviceName = displayName,
+            address = addr,
+            rssi = result.rssi,
+            lastSeen = now
+        )
+        discoveredDevices[addr] = discovered
+
+        if (isNewDevice) {
+            Log.i(TAG, "Discovered BLE peer: id=$peerId, name=$displayName, address=$addr, rssi=${result.rssi}")
+        }
+
+        val lastEmit = lastDeviceEmitTimes[addr] ?: 0L
+        if (isNewDevice || rssiDelta >= 8 || (now - lastEmit >= DEVICE_EMIT_THROTTLE_MS)) {
+            lastDeviceEmitTimes[addr] = now
+            emitDiscoveredDevices(force = isNewDevice)
+        }
+    }
+
+    private fun emitDiscoveryError(message: String) {
+        mainHandler.post {
+            val event = JSObject()
+            event.put("message", message)
+            event.put("isScanning", isScanning)
+            event.put("isAdvertising", isAdvertising)
+            notifyListeners("bleDiscoveryError", event)
+        }
+    }
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             result ?: return
-            val record = result.scanRecord ?: return
-            val device = result.device ?: return
+            handleScanResult(result)
+        }
 
-            val serviceData = record.getServiceData(ParcelUuid(SERVICE_UUID))
-            val peerId = if (serviceData != null && serviceData.isNotEmpty()) {
-                String(serviceData, StandardCharsets.UTF_8).trim()
-            } else {
-                "NODE-" + device.address.replace(":", "").takeLast(6)
+        override fun onBatchScanResults(results: MutableList<ScanResult>?) {
+            results ?: return
+            for (result in results) {
+                handleScanResult(result)
             }
-
-            if (peerId == localDeviceId) return
-
-            val now = System.currentTimeMillis()
-            val discovered = DiscoveredDevice(
-                deviceId = peerId,
-                deviceName = peerId,
-                address = device.address,
-                rssi = result.rssi,
-                lastSeen = now
-            )
-            discoveredDevices[device.address] = discovered
-            emitDiscoveredDevices()
         }
 
         override fun onScanFailed(errorCode: Int) {
-            Log.e(TAG, "Scan failed with error code: $errorCode")
+            if (errorCode == SCAN_FAILED_ALREADY_STARTED) {
+                isScanning = true
+                Log.i(TAG, "BLE Scan already active")
+                return
+            }
+            isScanning = false
+            val reason = when (errorCode) {
+                SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "Bluetooth scanner registration failed. Try toggling Bluetooth off and on."
+                SCAN_FAILED_FEATURE_UNSUPPORTED -> "BLE scanning is unsupported on this device."
+                SCAN_FAILED_INTERNAL_ERROR -> "Internal Bluetooth scan error."
+                SCAN_FAILED_SCANNING_TOO_FREQUENTLY -> "Scanning restarted too frequently. Wait a few seconds and retry."
+                else -> "BLE scan failed (error code $errorCode)."
+            }
+            Log.e(TAG, "Scan failed: $reason (code=$errorCode)")
+            emitDiscoveryError(reason)
         }
     }
 
@@ -1584,15 +1966,20 @@ class BleChatPlugin : Plugin() {
         val it = discoveredDevices.entries.iterator()
         while (it.hasNext()) {
             val entry = it.next()
-            if (!isDeviceConnected(entry.key) && now - entry.value.lastSeen > DEVICE_TIMEOUT_MS) {
+            if (!isDeviceConnected(entry.key) && connectionStates[entry.key] != "connecting" && now - entry.value.lastSeen > DEVICE_TIMEOUT_MS) {
+                lastDeviceEmitTimes.remove(entry.key)
                 it.remove()
             }
         }
     }
 
-    private fun emitDiscoveredDevices() {
+    private fun emitDiscoveredDevices(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastGlobalEmitTime < 400L) return
+        lastGlobalEmitTime = now
+
         cleanStaleDevices()
-        val list = JSArray()
+        val list = JSONArray()
         for (dev in discoveredDevices.values) {
             val peerInfo = keyStorage.getPeer(dev.deviceId)
             val obj = JSObject()
@@ -1613,8 +2000,10 @@ class BleChatPlugin : Plugin() {
         event.put("connectedCount", getTotalConnectedCount())
         event.put("maxConnections", MAX_DIRECT_CONNECTIONS)
         event.put("relayedCount", totalRelayedCount)
-        notifyListeners("bleDevicesUpdated", event)
-        emitUnifiedNeighbors()
+        mainHandler.post {
+            notifyListeners("bleDevicesUpdated", event)
+            emitUnifiedNeighbors()
+        }
     }
 
     // -------------------------------------------------------------------------

@@ -13,7 +13,6 @@ interface NativeBridgeTestPluginInterface {
   getNativeStatus(): Promise<NativeStatusResult>;
 }
 
-// Register native plugin for Capacitor
 const NativeBridgeTest = registerPlugin<NativeBridgeTestPluginInterface>('NativeBridgeTest');
 
 export interface BridgeCheckResult {
@@ -22,11 +21,6 @@ export interface BridgeCheckResult {
   data: NativeStatusResult | null;
 }
 
-/**
- * Checks Capacitor native bridge status.
- * Returns verified native system info when running inside Android container,
- * or clean fallback when running in a normal web browser.
- */
 export async function checkNativeBridgeStatus(): Promise<BridgeCheckResult> {
   if (Capacitor.isNativePlatform()) {
     try {
@@ -53,7 +47,6 @@ export async function checkNativeBridgeStatus(): Promise<BridgeCheckResult> {
     }
   }
 
-  // Clean fallback for browser environment
   return {
     isNative: false,
     platform: 'web',

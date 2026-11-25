@@ -1,13 +1,4 @@
-/**
- * Disaster Search API client for the Disaster Safety application.
- *
- * Connects to GET /api/v1/disasters/nearby to retrieve nearby verified
- * earthquake, flood, and cyclone disaster events with PostGIS distance calculations.
- */
-
-const BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
-  'http://localhost:8000';
+import { API_BASE_URL } from './client';
 
 export type DisasterType = 'EARTHQUAKE' | 'FLOOD' | 'CYCLONE';
 export type CrisisStatus = 'ACTIVE' | 'EXPIRED' | 'CANCELLED' | 'UNKNOWN';
@@ -16,17 +7,17 @@ export type DataFreshness = 'FRESH' | 'STALE' | 'EXPIRED' | 'UNKNOWN';
 
 export interface GeoJSONPoint {
   type: 'Point';
-  coordinates: [number, number]; // [longitude, latitude]
+  coordinates: [number, number];
 }
 
 export interface GeoJSONMultiPolygon {
   type: 'MultiPolygon';
-  coordinates: number[][][][]; // [ [ [ [lon, lat], ... ] ] ]
+  coordinates: number[][][][];
 }
 
 export interface GeoJSONLineString {
   type: 'LineString';
-  coordinates: number[][]; // [ [lon, lat], ... ]
+  coordinates: number[][];
 }
 
 export interface DisasterSourceSummary {
@@ -59,7 +50,7 @@ export interface DisasterEventSummary {
   status: CrisisStatus;
   location: GeoJSONPoint | null;
   affected_area: GeoJSONMultiPolygon | null;
-  flow_path?: { type: string; coordinates: any } | null;
+  flow_path?: { type: string; coordinates: [number, number][] } | null;
   distance_km: number | null;
   started_at: string | null;
   expires_at: string | null;
@@ -101,77 +92,15 @@ export interface FetchAllActiveDisastersParams {
   limit?: number;
 }
 
-export async function fetchAllActiveDisasters(
-  params?: FetchAllActiveDisastersParams,
+async function fetchDisastersEndpoint(
+  endpoint: string,
+  parseDetailOnError = false,
 ): Promise<FetchNearbyDisastersResult> {
-  const queryParams = new URLSearchParams();
-  if (params?.disaster_types && params.disaster_types.length > 0) {
-    queryParams.append('disaster_types', params.disaster_types.join(','));
-  }
-  if (params?.status && params.status.length > 0) {
-    queryParams.append('status', params.status.join(','));
-  }
-  if (params?.limit != null) {
-    queryParams.append('limit', params.limit.toString());
-  }
-
-  const endpoint = `${BASE_URL}/api/v1/disasters/active?${queryParams.toString()}`;
-
   let response: Response;
   try {
     response = await fetch(endpoint, {
       method: 'GET',
-      headers: {
-        Accept: 'application/json',
-      },
-    });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : 'Failed to connect to disaster service';
-    return { ok: false, kind: 'network', message };
-  }
-
-  if (!response.ok) {
-    return { ok: false, kind: 'server', status: response.status, message: `Server error ${response.status}` };
-  }
-
-  try {
-    const data: NearbyDisastersResponse = await response.json();
-    return { ok: true, data };
-  } catch {
-    return { ok: false, kind: 'server', status: response.status, message: 'Invalid response payload' };
-  }
-}
-
-export async function fetchNearbyDisasters(
-  params: FetchDisastersParams,
-): Promise<FetchNearbyDisastersResult> {
-  const queryParams = new URLSearchParams();
-  queryParams.append('latitude', params.latitude.toString());
-  queryParams.append('longitude', params.longitude.toString());
-
-  if (params.radius_km != null) {
-    queryParams.append('radius_km', params.radius_km.toString());
-  }
-  if (params.disaster_types && params.disaster_types.length > 0) {
-    queryParams.append('disaster_types', params.disaster_types.join(','));
-  }
-  if (params.status && params.status.length > 0) {
-    queryParams.append('status', params.status.join(','));
-  }
-  if (params.limit != null) {
-    queryParams.append('limit', params.limit.toString());
-  }
-
-  const endpoint = `${BASE_URL}/api/v1/disasters/nearby?${queryParams.toString()}`;
-
-  let response: Response;
-  try {
-    response = await fetch(endpoint, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-      },
+      headers: { Accept: 'application/json' },
     });
   } catch (error) {
     const message =
@@ -181,13 +110,18 @@ export async function fetchNearbyDisasters(
 
   if (!response.ok) {
     let message = `Server error ${response.status}`;
-    try {
-      const errBody = await response.json();
-      if (errBody.detail) {
-        message = typeof errBody.detail === 'string' ? errBody.detail : JSON.stringify(errBody.detail);
+    if (parseDetailOnError) {
+      try {
+        const errBody = await response.json();
+        if (errBody.detail) {
+          message =
+            typeof errBody.detail === 'string'
+              ? errBody.detail
+              : JSON.stringify(errBody.detail);
+        }
+      } catch {
+        // Keep status message when error body is not JSON.
       }
-    } catch {
-      // Keep default message
     }
     return { ok: false, kind: 'server', status: response.status, message };
   }
@@ -196,7 +130,55 @@ export async function fetchNearbyDisasters(
     const data: NearbyDisastersResponse = await response.json();
     return { ok: true, data };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Invalid JSON response from server';
-    return { ok: false, kind: 'network', message };
+    if (parseDetailOnError) {
+      const message =
+        error instanceof Error ? error.message : 'Invalid JSON response from server';
+      return { ok: false, kind: 'network', message };
+    }
+    return { ok: false, kind: 'server', status: response.status, message: 'Invalid response payload' };
   }
+}
+
+export function fetchAllActiveDisasters(
+  params?: FetchAllActiveDisastersParams,
+): Promise<FetchNearbyDisastersResult> {
+  const queryParams = new URLSearchParams();
+  if (params?.disaster_types?.length) {
+    queryParams.append('disaster_types', params.disaster_types.join(','));
+  }
+  if (params?.status?.length) {
+    queryParams.append('status', params.status.join(','));
+  }
+  if (params?.limit != null) {
+    queryParams.append('limit', params.limit.toString());
+  }
+
+  return fetchDisastersEndpoint(`${API_BASE_URL}/api/v1/disasters/active?${queryParams.toString()}`);
+}
+
+export function fetchNearbyDisasters(
+  params: FetchDisastersParams,
+): Promise<FetchNearbyDisastersResult> {
+  const queryParams = new URLSearchParams({
+    latitude: params.latitude.toString(),
+    longitude: params.longitude.toString(),
+  });
+
+  if (params.radius_km != null) {
+    queryParams.append('radius_km', params.radius_km.toString());
+  }
+  if (params.disaster_types?.length) {
+    queryParams.append('disaster_types', params.disaster_types.join(','));
+  }
+  if (params.status?.length) {
+    queryParams.append('status', params.status.join(','));
+  }
+  if (params.limit != null) {
+    queryParams.append('limit', params.limit.toString());
+  }
+
+  return fetchDisastersEndpoint(
+    `${API_BASE_URL}/api/v1/disasters/nearby?${queryParams.toString()}`,
+    true,
+  );
 }
