@@ -23,6 +23,7 @@ from app.api.v1.notifications import router as notifications_router
 from app.api.v1.recommendations import router as recommendations_router
 from app.api.v1.routes import router as routes_router
 from app.api.v1.safe_locations import router as safe_locations_router
+from app.api.v1.hybrid_safe_locations import router as hybrid_safe_locations_router
 from app.config import settings
 from app.logging_config import configure_logging
 from app.middleware import RateLimitMiddleware, SecurityHeadersMiddleware
@@ -90,6 +91,7 @@ app.include_router(earthquake_assessment_router)
 app.include_router(flood_assessment_router)
 app.include_router(cyclone_assessment_router)
 app.include_router(safe_locations_router)
+app.include_router(hybrid_safe_locations_router)
 app.include_router(recommendations_router)
 app.include_router(routes_router)
 app.include_router(alerts_router)

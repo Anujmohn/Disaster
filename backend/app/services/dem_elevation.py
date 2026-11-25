@@ -10,10 +10,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.schemas.flood_assessment import GeographicalEnvironment
-from app.services.city_elevation_data import (
-    find_nearest_city_elevation,
-    get_city_height_from_sea_level,
-)
 from app.services.terrain_analysis import (
     ElevationGrid,
     calculate_local_elevation,
@@ -157,20 +153,8 @@ def retrieve_candidate_elevation_and_3d(
             elev_res_m = 90.0
             elev_quality = "HIGH"
             uncertainty_m = 2.5
-        elif 6.0 <= lat <= 38.0 and 68.0 <= lon <= 98.0:
-            # Secondary supplementary macro regional reference within Indian bounds
-            try:
-                cand_ground_msl = get_city_height_from_sea_level(lat, lon)
-                nearest_city, _, city_dist_km, _, _ = find_nearest_city_elevation(lat, lon)
-                elev_status = "REGIONAL_BENCHMARK_INTERPOLATED"
-                elev_source = f"Survey of India Regional MSL Benchmark ({nearest_city} Reference)"
-                elev_res_m = 25000.0
-                elev_quality = "INTERPOLATED" if city_dist_km > 25.0 else "BENCHMARK"
-                uncertainty_m = 8.0
-            except Exception:
-                cand_ground_msl = None
         else:
-            # Completely outside coverage or missing data
+            # Missing DEM elevation must be marked UNKNOWN (never substitute hardcoded city elevation)
             cand_ground_msl = None
             elev_status = "ELEVATION_UNAVAILABLE"
             elev_quality = "UNKNOWN"

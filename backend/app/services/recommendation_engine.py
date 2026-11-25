@@ -198,13 +198,14 @@ def evaluate_earthquake_suitability(
     return classification, hard_exclusion, hard_reasons, evidence, hazards, warnings, missing, score, completeness
 
 
-def estimate_height_from_sea_level_msl(lat: float, lon: float, geo_env_val: str | None = None) -> float:
+def estimate_height_from_sea_level_msl(lat: float, lon: float, geo_env_val: str | None = None) -> float | None:
     """
-    Estimates height from sea level (meters MSL) for a geographical point in India
-    based on authoritative city elevation data, coastal proximity, and regional topography.
+    Retrieves ground elevation (meters MSL) from live DEM (Open-Meteo Copernicus) without
+    using hardcoded city elevation databases. Returns None if DEM is unavailable.
     """
-    from app.services.city_elevation_data import get_city_height_from_sea_level
-    return get_city_height_from_sea_level(lat, lon)
+    from app.services.dem_elevation import fetch_dem_elevations_from_api
+    elevs = fetch_dem_elevations_from_api([(lat, lon)], timeout_seconds=2.5)
+    return elevs.get((lat, lon))
 
 
 def evaluate_flood_transect_heights(
@@ -221,6 +222,8 @@ def evaluate_flood_transect_heights(
     is elevated above the incoming flood flow trajectory.
     """
     cand_msl = estimate_height_from_sea_level_msl(cand_lat, cand_lon)
+    if cand_msl is None:
+        return 0.0, [], False, "DEM elevation unavailable for flood transect comparison (UNKNOWN)."
 
     # Sample 4 intermediate points along the flood-to-user flow corridor
     mid_msl_values = []
@@ -228,7 +231,11 @@ def evaluate_flood_transect_heights(
         m_lat = flood_lat + t * (user_lat - flood_lat)
         m_lon = flood_lon + t * (user_lon - flood_lon)
         m_h = estimate_height_from_sea_level_msl(m_lat, m_lon)
-        mid_msl_values.append(m_h)
+        if m_h is not None:
+            mid_msl_values.append(m_h)
+
+    if not mid_msl_values:
+        return cand_msl, [], False, "Intermediate DEM elevations unavailable (UNKNOWN)."
 
     avg_mid_msl = sum(mid_msl_values) / len(mid_msl_values)
     min_mid_msl = min(mid_msl_values)
@@ -297,14 +304,19 @@ def evaluate_flood_suitability(
                 cand_msl, mid_msls, is_elev_above, transect_desc = evaluate_flood_transect_heights(
                     fl_lat, fl_lon, user_lat, user_lon, lat, lon
                 )
-                evidence.append(f"2. Elevation / Height from Sea Level: {cand_msl:.1f} m MSL. {transect_desc}")
+                elev_label = f"{cand_msl:.1f} m MSL" if cand_msl is not None else "UNKNOWN"
+                evidence.append(f"2. Elevation / Height from Sea Level: {elev_label}. {transect_desc}")
                 transect_computed = True
-                if not is_elev_above:
+                if not is_elev_above and cand_msl is not None:
                     warnings.append("Height from sea level is below intermediate terrain between flood origin and user; potential floodwater ponding.")
                 break
 
     if not transect_computed:
-        evidence.append(f"2. Elevation / Height from Sea Level: {cand_msl:.1f} m MSL (estimated from regional topographic gradient).")
+        if cand_msl is not None:
+            evidence.append(f"2. Elevation / Height from Sea Level: {cand_msl:.1f} m MSL (DEM Copernicus).")
+        else:
+            evidence.append("2. Elevation / Height from Sea Level: UNKNOWN (DEM unavailable).")
+            missing.append("DEM ground elevation unavailable.")
 
     # 3. & 5. Upcoming flood direction, predicted flow, and safety factor
     flood_flow_safe = True

@@ -16,10 +16,12 @@ class Settings(BaseSettings):
     db_echo: bool = False
     osrm_base_url: str = "http://router.project-osrm.org"
     osrm_timeout_seconds: float = 5.0
-    overpass_urls: str = "https://overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter,https://overpass.private.coffee/api/interpreter"
+    overpass_urls: str = "https://overpass.openstreetmap.fr/api/interpreter,https://overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter,https://overpass.private.coffee/api/interpreter"
     nominatim_url: str = "https://nominatim.openstreetmap.org"
     verify_country: bool = False
     safe_location_api_key: str | None = None
+    google_maps_api_key: str | None = None
+    azure_maps_key: str | None = None
     overpass_cache_ttl: int = 600
     alert_monitoring_enabled: bool = False
     alert_monitoring_interval_seconds: int = 300

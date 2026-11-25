@@ -15,8 +15,9 @@ import { BrowserGeolocationError, getCurrentBrowserLocation } from '../services/
 import { LocationData, validateLocation } from '../api/locationApi';
 import { DisasterEventSummary, DisasterType, fetchAllActiveDisasters } from '../api/disasterApi';
 import {
+  discoverHybridSafeLocations,
   fetchNearbySafeLocations,
-  findSafePlacesNearUser,
+  HybridDiscoveryResponse,
   SafeLocationItem,
   SafePlaceItem,
 } from '../api/safeLocationApi';
@@ -105,6 +106,11 @@ export default function MapScreen(): React.JSX.Element {
   const disasterMarkersRef = useRef<maplibregl.Marker[]>([]);
   const safeLocationMarkersRef = useRef<maplibregl.Marker[]>([]);
   const mainpuriLocationMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const cvMarkersRef = useRef<maplibregl.Marker[]>([]);
+
+  const [cvResult, setCvResult] = useState<HybridDiscoveryResponse | null>(null);
+  const [loadingCv, setLoadingCv] = useState(false);
+  const [showCvLayer, setShowCvLayer] = useState(true);
 
   const [userLoc, setUserLoc] = useState<UserLocationState>({ status: 'idle', location: null });
   const [activeFilter, setActiveFilter] = useState<FilterCategory>('ALL');
@@ -498,69 +504,23 @@ export default function MapScreen(): React.JSX.Element {
     const lng = userLoc.location?.longitude ?? 77.209;
     setLoadingSafePlaces(true);
     try {
-      const res = await findSafePlacesNearUser({
+      const fb = await fetchNearbySafeLocations({
         latitude: lat,
         longitude: lng,
-        disaster_type: activeFilter === 'ALL' ? null : activeFilter,
-        max_radius_km: 5.0,
+        radius_km: 15.0,
         limit: 30,
       });
-
-      if (res.success && res.safe_places?.length) {
-        setSafeLocations(res.safe_places);
-        setEffectiveRadiusKm(res.effective_radius_km);
-
-        const pMap: Record<string, SafePlaceItem> = {};
-        const sMap: Record<string, LocationSuitabilityAssessmentItem> = {};
-        for (const sp of res.safe_places) {
-          pMap[sp.id] = sp;
-          sMap[sp.id] = {
-            location_id: sp.id,
-            name: sp.name,
-            category: sp.category,
-            official_designation: sp.designation_status,
-            verification_status: sp.verification_status,
-            verification_detail: sp.verification_detail,
-            distance_km: sp.distance_km ?? 0.0,
-            disaster_type: (activeFilter === 'ALL' ? 'EARTHQUAKE' : activeFilter) as DisasterType,
-            suitability_classification: sp.suitability_classification as SuitabilityClassification,
-            suitability_score: sp.suitability_score,
-            data_completeness: 0.85,
-            distance_points: sp.distance_points,
-            safety_points: sp.safety_points,
-            availability_points: sp.availability_points,
-            features_points: sp.features_points,
-            total_points: sp.total_points,
-            hard_exclusion_status: sp.suitability_classification === 'EXCLUDED',
-            hard_exclusion_reasons: [],
-            supporting_evidence: sp.suitability_evidence,
-            identified_hazards: sp.key_hazards,
-            warnings: sp.warnings,
-            missing_information: sp.missing_information,
-            data_sources: sp.sources.map((s) => s.data_source_name),
-            data_freshness: 'FRESH',
-            assessed_at: new Date().toISOString(),
-          };
-        }
-        setSafePlacesMap(pMap);
-        setSuitabilityMap((prev) => ({ ...prev, ...sMap }));
-      } else {
-        setSafeLocations([]);
+      if (fb.success) {
+        setSafeLocations(fb.locations);
         setSafePlacesMap({});
-        setEffectiveRadiusKm(res?.effective_radius_km || 2.0);
+        setEffectiveRadiusKm(15.0);
       }
-    } catch (err) {
-      console.warn('Safe Place Engine fetch note:', err);
-      try {
-        const fb = await fetchNearbySafeLocations({ latitude: lat, longitude: lng, radius_km: 5.0, limit: 20 });
-        if (fb.success) setSafeLocations(fb.locations);
-      } catch (fbErr) {
-        console.warn('Fallback safe locations fetch note:', fbErr);
-      }
+    } catch (fbErr) {
+      console.warn('Nearby safe locations / hospitals fetch note:', fbErr);
     } finally {
       setLoadingSafePlaces(false);
     }
-  }, [userLoc.location, activeFilter]);
+  }, [userLoc.location]);
 
   const loadAlerts = useCallback(async () => {
     try {
@@ -577,11 +537,187 @@ export default function MapScreen(): React.JSX.Element {
     }
   }, [userLoc.location]);
 
+  const loadComputerVisionFeatures = useCallback(async () => {
+    if (!userLoc.location) return;
+    setLoadingCv(true);
+    try {
+      const mode = activeFilter === 'FLOOD' || selectedDisaster?.disaster_type === 'FLOOD' ? 'FLOOD' : 'EARTHQUAKE';
+      const res = await discoverHybridSafeLocations({
+        latitude: userLoc.location.latitude,
+        longitude: userLoc.location.longitude,
+        disaster_type: mode,
+        max_radius_m: 2000,
+        min_candidates: 3,
+        max_results: 25,
+      });
+      if (res.success) {
+        setCvResult(res);
+      }
+    } catch (err) {
+      console.warn('Hybrid safe-location discovery note:', err);
+    } finally {
+      setLoadingCv(false);
+    }
+  }, [userLoc.location, activeFilter, selectedDisaster]);
+
   useEffect(() => {
     loadDisasters();
     loadSafePlaces();
     loadAlerts();
-  }, [loadDisasters, loadSafePlaces, loadAlerts]);
+    loadComputerVisionFeatures();
+  }, [loadDisasters, loadSafePlaces, loadAlerts, loadComputerVisionFeatures]);
+
+  useEffect(() => {
+    cvMarkersRef.current.forEach((m) => m.remove());
+    cvMarkersRef.current = [];
+
+    if (!mapRef.current || !showCvLayer || !cvResult?.candidates?.length) return;
+
+    const statusColor: Record<string, string> = {
+      SUITABLE_WITH_EVIDENCE: '#16A34A',
+      CONDITIONALLY_SUITABLE: '#0D9488',
+      INSUFFICIENT_DATA: '#D97706',
+      UNKNOWN: '#64748B',
+      NOT_RECOMMENDED: '#DC2626',
+    };
+
+    for (const cand of cvResult.candidates) {
+      const bg = statusColor[cand.assessment_status] ?? '#0D9488';
+      const el = document.createElement('div');
+      el.className = 'custom-maplibre-marker';
+      el.title = `${cand.name || cand.category} (${cand.assessment_status})`;
+      el.innerHTML = `
+        <div class="marker-inner" style="background-color: ${bg}; width: 24px; height: 24px; font-size: 12px; border: 2px solid #FFFFFF; box-shadow: 0 2px 6px rgba(0,0,0,0.28); display: flex; align-items: center; justify-content: center;">
+          ${cand.applicable_disaster === 'FLOOD' ? '⛰️' : '🟩'}
+        </div>
+      `;
+
+      const areaLine = cand.area_m2
+        ? `<div><strong>Area:</strong> ${Math.round(cand.area_m2).toLocaleString()} m²</div>`
+        : '';
+      const elevLine = cand.elevation_m != null
+        ? `<div><strong>Elevation:</strong> ${cand.elevation_m} m MSL</div>`
+        : '';
+      const reasonText = [...cand.reasons, ...cand.rejection_or_conditional_reasons].slice(0, 2).join(' • ');
+
+      const popup = new maplibregl.Popup({ offset: 18 }).setHTML(`
+        <div style="font-family:system-ui,sans-serif;padding:4px 6px;font-size:12px;line-height:1.45;max-width:250px;">
+          <div style="font-weight:700;color:${bg};font-size:11px;text-transform:uppercase;">
+            ${cand.assessment_status.replace(/_/g, ' ')} (${cand.applicable_disaster})
+          </div>
+          <div style="font-weight:700;color:#0F172A;margin:2px 0 4px;">${cand.name || cand.category.replace(/_/g, ' ')}</div>
+          <div style="color:#475569;">
+            <div><strong>Distance (boundary):</strong> ${Math.round(cand.distance_m)} m</div>
+            ${areaLine}${elevLine}
+            <div><strong>Origin:</strong> ${cand.origin_classification.replace(/_/g, ' ')}</div>
+            ${reasonText ? `<div style="font-size:11px;color:#334155;margin-top:4px;">${reasonText}</div>` : ''}
+            <div style="font-size:10px;color:#64748B;margin-top:4px;">Sources: ${cand.evidence_sources.join(', ')}</div>
+          </div>
+        </div>
+      `);
+
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat([cand.nearest_point.longitude, cand.nearest_point.latitude])
+        .setPopup(popup)
+        .addTo(mapRef.current);
+      cvMarkersRef.current.push(marker);
+    }
+  }, [cvResult, showCvLayer]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const sourceId = 'cv-earthquake-polygons-source';
+    const fillLayerId = 'cv-earthquake-polygons-fill';
+    const outlineLayerId = 'cv-earthquake-polygons-outline';
+
+    const polygonFeatures =
+      showCvLayer && cvResult?.candidates
+        ? cvResult.candidates
+            .filter((c) => c.polygon_geojson && c.assessment_status !== 'NOT_RECOMMENDED')
+            .map((c) => ({
+              type: 'Feature' as const,
+              geometry: c.polygon_geojson!,
+              properties: {
+                id: c.id,
+                name: c.name || c.category.replace(/_/g, ' '),
+                status: c.assessment_status,
+                disaster: c.applicable_disaster,
+                area_m2: c.area_m2 ?? 0,
+                distance_m: Math.round(c.distance_m),
+                origin: c.origin_classification,
+              },
+            }))
+        : [];
+
+    const featureCollection = {
+      type: 'FeatureCollection' as const,
+      features: polygonFeatures,
+    };
+
+    const existingSource = map.getSource(sourceId) as maplibregl.GeoJSONSource | undefined;
+    if (existingSource) {
+      existingSource.setData(featureCollection);
+      return;
+    }
+
+    const addPolygonLayers = () => {
+      if (map.getSource(sourceId)) return;
+      map.addSource(sourceId, { type: 'geojson', data: featureCollection });
+      map.addLayer({
+        id: fillLayerId,
+        type: 'fill',
+        source: sourceId,
+        paint: {
+          'fill-color': '#16A34A',
+          'fill-opacity': 0.25,
+        },
+      });
+      map.addLayer({
+        id: outlineLayerId,
+        type: 'line',
+        source: sourceId,
+        paint: {
+          'line-color': '#15803D',
+          'line-width': 2.5,
+        },
+      });
+      map.on('click', fillLayerId, (e) => {
+        const feat = e.features?.[0];
+        if (!feat || !feat.properties) return;
+        const p = feat.properties as Record<string, string | number>;
+        new maplibregl.Popup({ offset: 12 })
+          .setLngLat(e.lngLat)
+          .setHTML(`
+            <div style="font-family:system-ui,sans-serif;padding:4px 6px;font-size:12px;line-height:1.45;max-width:240px;">
+              <div style="font-weight:700;color:#15803D;font-size:11px;text-transform:uppercase;">
+                ${String(p.status).replace(/_/g, ' ')} (${p.disaster})
+              </div>
+              <div style="font-weight:700;color:#0F172A;margin:2px 0 4px;">${p.name}</div>
+              <div style="color:#475569;">
+                <div><strong>Area:</strong> ${Number(p.area_m2).toLocaleString()} m²</div>
+                <div><strong>Boundary Distance:</strong> ${p.distance_m} m</div>
+                <div><strong>Origin:</strong> ${String(p.origin).replace(/_/g, ' ')}</div>
+              </div>
+            </div>
+          `)
+          .addTo(map);
+      });
+      map.on('mouseenter', fillLayerId, () => {
+        map.getCanvas().style.cursor = 'pointer';
+      });
+      map.on('mouseleave', fillLayerId, () => {
+        map.getCanvas().style.cursor = '';
+      });
+    };
+
+    if (map.isStyleLoaded()) {
+      addPolygonLayers();
+    } else {
+      map.once('styledata', addPolygonLayers);
+    }
+  }, [cvResult, showCvLayer]);
 
   useEffect(() => {
     if (!mapRef.current) return;
@@ -1135,6 +1271,26 @@ export default function MapScreen(): React.JSX.Element {
             title="Pick a city or type coordinates"
           >
             ✏️ Change Location
+          </button>
+
+          <button
+            className="action-btn-pill"
+            style={{
+              backgroundColor: showCvLayer ? '#CCFBF1' : 'var(--bg-surface)',
+              borderColor: showCvLayer ? '#14B8A6' : 'var(--border-subtle)',
+              color: showCvLayer ? '#0F766E' : 'var(--text-primary)',
+              fontWeight: 600,
+            }}
+            onClick={() => setShowCvLayer((prev) => !prev)}
+            title={
+              cvResult
+                ? `${cvResult.imagery_metadata.provider} (${cvResult.imagery_metadata.status}) • Seg: ${cvResult.segmentation_status.status} • OSM: ${cvResult.osm_status}`
+                : 'Toggle Hybrid Safe Spaces layer'
+            }
+          >
+            {loadingCv
+              ? '🛰️ Scanning…'
+              : `🛰️ Hybrid Safe Spaces (${cvResult?.total_candidates ?? 0} • ${cvResult?.effective_radius_m ?? 100}m)`}
           </button>
 
           <button

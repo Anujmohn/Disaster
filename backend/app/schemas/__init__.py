@@ -57,18 +57,6 @@ from app.schemas.flood_assessment import (
     TerrainEvidence,
     TerrainHazardStatus,
 )
-from app.schemas.flood_safe import (
-    ALL_CATEGORIES,
-    CandidateLocation,
-    CandidateRoute,
-    CategorizedRecommendations,
-    Category,
-    CrisisLocation,
-    ElevationSummary,
-    FloodSafeLocationsResponse,
-    Point,
-    SafeLocationRequest,
-)
 from app.schemas.hazard import (
     HazardObservationCreate,
     HazardObservationRead,
@@ -238,14 +226,4 @@ __all__ = [
     "NearbyAlertsResponse",
     "NotificationHistoryItem",
     "NotificationHistoryResponse",
-    "Category",
-    "ALL_CATEGORIES",
-    "Point",
-    "CrisisLocation",
-    "SafeLocationRequest",
-    "CandidateRoute",
-    "CandidateLocation",
-    "ElevationSummary",
-    "CategorizedRecommendations",
-    "FloodSafeLocationsResponse",
 ]

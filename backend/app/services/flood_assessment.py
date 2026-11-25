@@ -17,11 +17,6 @@ from app.models.core import CrisisEvent, CrisisSourceReport, DataSource, HazardO
 from app.models.enums import CrisisStatus, CrisisType, DesignationStatus, SeverityLevel, VerificationStatus
 from app.schemas.disaster_search import DisasterSourceSummary, UserLocation
 from app.schemas.safe_place import FloodSafetyFields
-from app.services.city_elevation_data import (
-    find_nearest_city_elevation,
-    get_city_height_from_sea_level,
-    haversine_distance_km,
-)
 from app.services.dem_elevation import retrieve_candidate_elevation_and_3d
 from app.services.terrain_analysis import (
     ElevationGrid,
@@ -167,11 +162,9 @@ def classify_geographical_environment(
         notes.append("Located within major alluvial/coastal plain physiographic regions.")
         return GeographicalEnvironment.PLAIN_OR_FLAT, notes
 
-    # 3. Fallback elevation check for intermediate plateau / upland regions
-    from app.services.city_elevation_data import get_city_height_from_sea_level
-    current_elev = elevation_m if elevation_m is not None else get_city_height_from_sea_level(latitude, longitude)
-    if current_elev is not None and current_elev < 450.0:
-        notes.append(f"Classified as PLAIN_OR_FLAT based on ground elevation ({current_elev:.1f} m MSL).")
+    # 3. Elevation check when DEM elevation is provided
+    if elevation_m is not None and elevation_m < 450.0:
+        notes.append(f"Classified as PLAIN_OR_FLAT based on ground elevation ({elevation_m:.1f} m MSL).")
         return GeographicalEnvironment.PLAIN_OR_FLAT, notes
 
     notes.append("Physiographic environment undetermined from available regional boundaries.")

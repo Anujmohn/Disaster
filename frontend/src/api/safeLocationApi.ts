@@ -244,5 +244,99 @@ export function findSafePlacesNearUser(params: {
   );
 }
 
+export interface HybridSafeCandidate {
+  id: string;
+  name?: string | null;
+  category: string;
+  latitude: number;
+  longitude: number;
+  nearest_point: { latitude: number; longitude: number };
+  polygon_geojson?: { type: 'Polygon'; coordinates: number[][][] } | null;
+  distance_m: number;
+  area_m2?: number | null;
+  origin_classification:
+    | 'SATELLITE_DETECTED'
+    | 'OSM_VERIFIED'
+    | 'SATELLITE_AND_OSM_MATCHED'
+    | 'DEM_DERIVED'
+    | 'UNVERIFIED';
+  assessment_status:
+    | 'SUITABLE_WITH_EVIDENCE'
+    | 'CONDITIONALLY_SUITABLE'
+    | 'NOT_RECOMMENDED'
+    | 'INSUFFICIENT_DATA'
+    | 'UNKNOWN';
+  applicable_disaster: 'EARTHQUAKE' | 'FLOOD';
+  confidence?: number | null;
+  evidence_sources: string[];
+  reasons: string[];
+  rejection_or_conditional_reasons: string[];
+  elevation_m?: number | null;
+  elevation_status: string;
+}
+
+export interface HybridDiscoveryResponse {
+  success: boolean;
+  status: 'OK' | 'NO_CANDIDATES_FOUND' | 'NO_SUITABLE_LOCATION_FOUND' | 'INSUFFICIENT_DATA';
+  user_location: { latitude: number; longitude: number };
+  disaster_type: 'EARTHQUAKE' | 'FLOOD';
+  scanned_radii_m: number[];
+  effective_radius_m: number;
+  osm_candidates_count: number;
+  satellite_candidates_count: number;
+  merged_candidates_count: number;
+  diagnostics: {
+    osm_features_found: number;
+    cv_detections_found: number;
+    merged_candidates_count: number;
+    duplicates_removed: number;
+    candidates_rejected: number;
+    rejection_reasons: string[];
+    candidates_returned: number;
+  };
+  imagery_metadata: {
+    provider: string;
+    status: 'AVAILABLE' | 'IMAGERY_UNAVAILABLE';
+    unavailable_reason?: string | null;
+  };
+  segmentation_status: {
+    model_name: string;
+    device: string;
+    status: string;
+    reason?: string | null;
+  };
+  osm_status: 'AVAILABLE' | 'OSM_UNAVAILABLE';
+  dem_status: 'AVAILABLE' | 'DEM_UNAVAILABLE' | 'NOT_APPLICABLE';
+  total_candidates: number;
+  candidates: HybridSafeCandidate[];
+  warnings: string[];
+  disclaimer: string;
+}
+
+export function discoverHybridSafeLocations(params: {
+  latitude: number;
+  longitude: number;
+  disaster_type?: 'EARTHQUAKE' | 'FLOOD';
+  max_radius_m?: number;
+  min_candidates?: number;
+  max_results?: number;
+}): Promise<HybridDiscoveryResponse> {
+  return requestJson<HybridDiscoveryResponse>(
+    '/api/v1/safe-locations/discover',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        latitude: params.latitude,
+        longitude: params.longitude,
+        disaster_type: params.disaster_type ?? 'EARTHQUAKE',
+        max_radius_m: params.max_radius_m ?? 2000,
+        min_candidates: params.min_candidates ?? 3,
+        max_results: params.max_results ?? 25,
+      }),
+    },
+    'Failed to run hybrid safe-location discovery',
+  );
+}
+
 export * from './recommendationApi';
 export * from './routeApi';
