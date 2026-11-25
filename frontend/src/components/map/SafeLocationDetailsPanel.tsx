@@ -5,11 +5,12 @@ import {
   SafePlaceItem,
 } from '../../api/safeLocationApi';
 import {
-  formatCategoryLabel,
-  formatDesignationLabel,
   formatDistance,
+  formatSafeLocationCategoryLabel,
+  formatSafeLocationDesignationLabel,
   formatSuitabilityLabel,
   formatVerificationLabel,
+  isOfficiallyVerifiedShelter,
 } from '../../utils/formatters';
 
 interface SafeLocationDetailsPanelProps {
@@ -41,6 +42,10 @@ export function SafeLocationDetailsPanel({
 }: SafeLocationDetailsPanelProps): React.JSX.Element {
   const floodFields = safePlace?.flood_fields;
   const totalPoints = location.total_points ?? suitability?.total_points;
+  const isVerifiedOfficialShelter = isOfficiallyVerifiedShelter(
+    location.designation_status,
+    location.verification_status,
+  );
 
   return (
     <div className="side-panel">
@@ -53,12 +58,20 @@ export function SafeLocationDetailsPanel({
           {location.name || 'Nearby Shelter'}
         </h3>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '12px' }}>
-          {formatCategoryLabel(location.category)} • {formatDistance(location.distance_km)} away
+          {formatSafeLocationCategoryLabel(
+            location.category,
+            location.designation_status,
+            location.verification_status,
+          )}{' '}
+          • {formatDistance(location.distance_km)} away
         </p>
 
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
-          <span className={`badge ${location.designation_status === 'OFFICIAL' ? 'badge-official' : 'badge-unverified'}`}>
-            {formatDesignationLabel(location.designation_status)}
+          <span className={`badge ${isVerifiedOfficialShelter ? 'badge-official' : 'badge-unverified'}`}>
+            {formatSafeLocationDesignationLabel(
+              location.designation_status,
+              location.verification_status,
+            )}
           </span>
           <span className={`badge ${location.verification_status === 'VERIFIED' ? 'badge-verified' : 'badge-unverified'}`}>
             {formatVerificationLabel(location.verification_status)}
@@ -173,7 +186,11 @@ export function SafeLocationDetailsPanel({
                         ? '🌉 Elevated Bridge / Flyover'
                         : floodFields.candidate_type === 'OFFICIAL_FLOOD_SHELTER'
                           ? '🏠 Official Flood Shelter'
-                          : formatCategoryLabel(location.category)}
+                          : formatSafeLocationCategoryLabel(
+                              location.category,
+                              location.designation_status,
+                              location.verification_status,
+                            )}
                   </div>
                   <div>
                     <strong>Distance:</strong> {floodFields.distance_from_user_km.toFixed(2)} km

@@ -405,6 +405,10 @@ interface BleChatPluginInterface {
     eventName: 'meshParticipantsUpdated',
     listenerFunc: (data: { participants: MeshParticipant[] }) => void,
   ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: 'bleDiscoveryError',
+    listenerFunc: (data: { code: number; message: string }) => void,
+  ): Promise<PluginListenerHandle>;
 }
 
 const BleChat = registerPlugin<BleChatPluginInterface>('BleChat');
@@ -727,6 +731,11 @@ export const bleChatService = {
   onPeerKeyExchanged(callback: (data: { peerId: string; fingerprint: string; isVerified: boolean; keyChanged?: boolean }) => void): Promise<PluginListenerHandle> | null {
     if (!Capacitor.isNativePlatform()) return null;
     return BleChat.addListener('blePeerKeyExchanged', callback);
+  },
+
+  onDiscoveryError(callback: (data: { code: number; message: string }) => void): Promise<PluginListenerHandle> | null {
+    if (!Capacitor.isNativePlatform()) return null;
+    return BleChat.addListener('bleDiscoveryError', callback);
   },
 
   async startBackgroundMesh(): Promise<{ success: boolean; isRunning: boolean; status: string; connectedCount: number }> {

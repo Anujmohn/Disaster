@@ -117,6 +117,342 @@ body, html {
   position: relative;
 }
 
+.mainpuri-location-marker {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.mainpuri-location-marker .marker-inner {
+  width: 30px;
+  height: 30px;
+  font-size: 17px;
+  color: #FFFFFF;
+}
+
+.mainpuri-safe-locations-panel {
+  top: 72px;
+  left: 12px;
+  z-index: 22;
+}
+
+.mainpuri-safe-locations-panel .side-panel-body {
+  padding: 12px;
+}
+
+.mainpuri-shelter-notice {
+  margin: 0 0 12px;
+  padding: 9px 10px;
+  border: 1px solid #FDE68A;
+  border-radius: 8px;
+  background: #FFFBEB;
+  color: #854D0E;
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.mainpuri-search-coverage {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 12px;
+  padding: 9px;
+  border: 1px solid #CBD5E1;
+  border-radius: 8px;
+  background: #F8FAFC;
+  color: #334155;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.mainpuri-search-coverage > strong {
+  color: #0F172A;
+  font-size: 0.75rem;
+}
+
+.mainpuri-search-coverage-item {
+  padding-top: 6px;
+  border-top: 1px solid #E2E8F0;
+}
+
+.mainpuri-search-coverage-item > span {
+  color: #1E293B;
+  font-weight: 700;
+}
+
+.mainpuri-search-coverage-item p {
+  margin: 3px 0;
+}
+
+.mainpuri-search-coverage-item > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mainpuri-search-coverage a {
+  color: #1D4ED8;
+  overflow-wrap: anywhere;
+}
+
+.mainpuri-search-label,
+.mainpuri-filter-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.mainpuri-search-input,
+.mainpuri-filter-row select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: #FFFFFF;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.mainpuri-filter-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.mainpuri-location-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.mainpuri-tool-button,
+.mainpuri-directions-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid #CBD5E1;
+  border-radius: 7px;
+  background: #FFFFFF;
+  color: #334155;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.mainpuri-tool-button.active,
+.mainpuri-directions-button {
+  border-color: #2563EB;
+  background: #EFF6FF;
+  color: #1D4ED8;
+}
+
+.mainpuri-tool-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.mainpuri-helper-text,
+.mainpuri-inline-error {
+  margin: 8px 0;
+  color: #64748B;
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.mainpuri-inline-error {
+  color: #B91C1C;
+}
+
+.mainpuri-location-results {
+  margin-top: 10px;
+}
+
+.mainpuri-result-count {
+  margin-bottom: 6px;
+  color: #64748B;
+  font-size: 0.73rem;
+  font-weight: 700;
+}
+
+.mainpuri-location-card {
+  display: flex;
+  align-items: stretch;
+  margin-top: 6px;
+  border: 1px solid #E2E8F0;
+  border-radius: 8px;
+  background: #FFFFFF;
+}
+
+.mainpuri-location-card.selected {
+  border-color: #60A5FA;
+  background: #EFF6FF;
+}
+
+.mainpuri-location-select {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 0;
+  background: transparent;
+  color: #334155;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mainpuri-location-select strong {
+  color: #0F172A;
+  font-size: 0.82rem;
+}
+
+.mainpuri-location-select span {
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.mainpuri-location-meta {
+  color: #1D4ED8;
+  font-weight: 700;
+}
+
+.mainpuri-location-select .mainpuri-location-source {
+  color: #64748B;
+  font-size: 0.66rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.mainpuri-favorite-button {
+  width: 38px;
+  border: 0;
+  background: transparent;
+  color: #B45309;
+  font-size: 1.15rem;
+  cursor: pointer;
+}
+
+.mainpuri-location-details {
+  margin-top: 12px;
+  padding: 11px;
+  border: 1px solid #CBD5E1;
+  border-radius: 9px;
+  background: #F8FAFC;
+  color: #334155;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.mainpuri-location-details h3 {
+  margin: 0 0 5px;
+  color: #0F172A;
+  font-size: 0.95rem;
+}
+
+.mainpuri-location-details p {
+  margin: 6px 0;
+}
+
+.mainpuri-detail-badges,
+.mainpuri-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.mainpuri-status-badge {
+  padding: 3px 7px;
+  border-radius: 9999px;
+  background: #DBEAFE;
+  color: #1E40AF;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.mainpuri-status-badge.not-shelter {
+  background: #FEF3C7;
+  color: #92400E;
+}
+
+.mainpuri-detail-actions > a:not(.mainpuri-directions-button) {
+  color: #1D4ED8;
+  font-weight: 700;
+}
+
+.mainpuri-map-legend {
+  position: absolute;
+  right: 12px;
+  bottom: 42px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: min(250px, calc(100vw - 24px));
+  padding: 9px 11px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.12);
+  color: #334155;
+  font-size: 0.68rem;
+  pointer-events: none;
+}
+
+.mainpuri-map-legend strong {
+  color: #0F172A;
+  font-size: 0.74rem;
+}
+
+.mainpuri-map-legend span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  border-radius: 50%;
+}
+
+.legend-dot.green { background: #16A34A; }
+.legend-dot.blue { background: #2563EB; }
+.legend-dot.orange { background: #F97316; }
+.legend-dot.red { background: #DC2626; }
+
+.map-tile-notice {
+  position: absolute;
+  top: 76px;
+  right: 12px;
+  z-index: 13;
+  max-width: min(360px, calc(100vw - 24px));
+  padding: 8px 11px;
+  border: 1px solid #FDE68A;
+  border-radius: 8px;
+  background: rgba(255, 251, 235, 0.96);
+  color: #854D0E;
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
 /* Top Floating Controls Bar */
 .map-controls-bar {
   position: absolute;
@@ -3266,6 +3602,21 @@ body, html {
     width: auto;
     max-width: none;
     max-height: 58%;
+  }
+
+  .mainpuri-safe-locations-panel {
+    bottom: 52px;
+    max-height: 72%;
+  }
+
+  .mainpuri-map-legend {
+    right: 8px;
+    bottom: 46px;
+  }
+
+  .map-tile-notice {
+    top: 88px;
+    right: 8px;
   }
 
   .selected-safe-location-banner {

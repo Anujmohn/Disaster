@@ -5,6 +5,8 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import {
   DEFAULT_CENTER,
   DEFAULT_ZOOM,
+  MAINPURI_CENTER,
+  MAINPURI_ZOOM,
   MAP_ATTRIBUTION,
   MAP_STYLE_URL,
   USER_LOCATION_ZOOM,
@@ -34,18 +36,26 @@ import {
 } from '../api/alertApi';
 import { getDeviceId, initializeWebNotifications } from '../services/notificationService';
 import {
-  formatCategoryLabel,
-  formatDesignationLabel,
   formatDistance,
+  formatSafeLocationCategoryLabel,
+  formatSafeLocationDesignationLabel,
   formatVerificationLabel,
+  isOfficiallyVerifiedShelter,
 } from '../utils/formatters';
 import { computePredictedFloodPath, getBasinName, getDisasterCoords, getFlowDirectionText } from '../utils/floodFlow';
 import { DisasterDetailsPanel } from '../components/map/DisasterDetailsPanel';
 import { SafeLocationDetailsPanel } from '../components/map/SafeLocationDetailsPanel';
+import { MainpuriSafeLocationsPanel } from '../components/map/MainpuriSafeLocationsPanel';
 import { EvacuationRoutePanel } from '../components/map/EvacuationRoutePanel';
 import { ManualLocationModal } from '../components/map/ManualLocationModal';
 import { UnifiedRecommendationsModal } from '../components/map/UnifiedRecommendationsModal';
 import { AlertCenterModal } from '../components/map/AlertCenterModal';
+import {
+  getSafeLocationMarkerColor,
+  isValidMainpuriSafeLocation,
+  MainpuriSafeLocation,
+  mainpuriSafeLocations,
+} from '../services/mainpuriSafeLocations';
 
 type FilterCategory = 'ALL' | 'EARTHQUAKE' | 'FLOOD' | 'CYCLONE';
 
@@ -94,6 +104,7 @@ export default function MapScreen(): React.JSX.Element {
   const userMarkerRef = useRef<maplibregl.Marker | null>(null);
   const disasterMarkersRef = useRef<maplibregl.Marker[]>([]);
   const safeLocationMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const mainpuriLocationMarkersRef = useRef<maplibregl.Marker[]>([]);
 
   const [userLoc, setUserLoc] = useState<UserLocationState>({ status: 'idle', location: null });
   const [activeFilter, setActiveFilter] = useState<FilterCategory>('ALL');
@@ -102,6 +113,19 @@ export default function MapScreen(): React.JSX.Element {
   const [selectedDisaster, setSelectedDisaster] = useState<DisasterEventSummary | null>(null);
 
   const [safeLocations, setSafeLocations] = useState<SafeLocationItem[]>([]);
+  const validMainpuriLocations = useMemo(
+    () => mainpuriSafeLocations.filter(isValidMainpuriSafeLocation),
+    [],
+  );
+  const [visibleMainpuriLocations, setVisibleMainpuriLocations] =
+    useState<MainpuriSafeLocation[]>(validMainpuriLocations);
+  const [showMainpuriSafeLocations, setShowMainpuriSafeLocations] = useState(false);
+  const [selectedMainpuriLocationId, setSelectedMainpuriLocationId] = useState<string | null>(null);
+  const [mainpuriUserCoordinates, setMainpuriUserCoordinates] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
+  const [mapTilesUnavailable, setMapTilesUnavailable] = useState(false);
   const [safePlacesMap, setSafePlacesMap] = useState<Record<string, SafePlaceItem>>({});
   const [effectiveRadiusKm, setEffectiveRadiusKm] = useState(5.0);
   const [loadingSafePlaces, setLoadingSafePlaces] = useState(false);
@@ -136,14 +160,77 @@ export default function MapScreen(): React.JSX.Element {
     setTimeout(() => setFeedbackToast(null), 3500);
   }, []);
 
+  const focusMainpuriLocations = useCallback((locations: MainpuriSafeLocation[]) => {
+    const map = mapRef.current;
+    const positioned = locations.filter(
+      (location) =>
+        location.latitude != null &&
+        location.longitude != null &&
+        Number.isFinite(location.latitude) &&
+        Number.isFinite(location.longitude),
+    );
+    if (!map || positioned.length === 0) return;
+
+    if (positioned.length === 1) {
+      const location = positioned[0];
+      map.easeTo({
+        center: [location.longitude!, location.latitude!],
+        zoom: 14,
+        duration: 500,
+      });
+      return;
+    }
+
+    const bounds = new maplibregl.LngLatBounds();
+    positioned.forEach((location) => bounds.extend([location.longitude!, location.latitude!]));
+    map.fitBounds(bounds, { padding: 80, maxZoom: 12, duration: 500 });
+  }, []);
+
+  const handleSelectMainpuriLocation = useCallback(
+    (location: MainpuriSafeLocation) => {
+      setSelectedMainpuriLocationId(location.id);
+      setSelectedSafeLocation(null);
+      setSelectedDisaster(null);
+      setShowMainpuriSafeLocations(true);
+      if (location.latitude != null && location.longitude != null) {
+        mapRef.current?.easeTo({
+          center: [location.longitude, location.latitude],
+          zoom: 14,
+          duration: 500,
+        });
+      }
+    },
+    [],
+  );
+
+  const handleMainpuriUserCoordinatesChange = useCallback(
+    (coordinates: { latitude: number; longitude: number }) => {
+      setMainpuriUserCoordinates(coordinates);
+      if (mapRef.current) {
+        mapRef.current.flyTo({
+          center: [coordinates.longitude, coordinates.latitude],
+          zoom: USER_LOCATION_ZOOM,
+          essential: true,
+        });
+        upsertUserMarker(mapRef.current, userMarkerRef, coordinates.longitude, coordinates.latitude);
+      }
+    },
+    [],
+  );
+
+  const handleVisibleMainpuriLocationsChange = useCallback(
+    (locations: MainpuriSafeLocation[]) => setVisibleMainpuriLocations(locations),
+    [],
+  );
+
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
       style: MAP_STYLE_URL,
-      center: DEFAULT_CENTER,
-      zoom: DEFAULT_ZOOM,
+      center: MAINPURI_CENTER,
+      zoom: MAINPURI_ZOOM,
       attributionControl: false,
     });
 
@@ -244,6 +331,12 @@ export default function MapScreen(): React.JSX.Element {
       });
     });
 
+    map.on('error', (event) => {
+      if (/tile|network|fetch|request failed|failed to load|connection/i.test(event.error.message)) {
+        setMapTilesUnavailable(true);
+      }
+    });
+
     mapRef.current = map;
 
     return () => {
@@ -251,6 +344,25 @@ export default function MapScreen(): React.JSX.Element {
       mapRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const handleOffline = () => setMapTilesUnavailable(true);
+    const handleOnline = () => setMapTilesUnavailable(false);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!userLoc.location) return;
+    setMainpuriUserCoordinates({
+      latitude: userLoc.location.latitude,
+      longitude: userLoc.location.longitude,
+    });
+  }, [userLoc.location]);
 
   const handleAcquireLocation = useCallback(async () => {
     setUserLoc({ status: 'loading', location: null });
@@ -516,14 +628,19 @@ export default function MapScreen(): React.JSX.Element {
       const [lng, lat] = loc.location.coordinates;
 
       const isSelected = userSelectedSafeLocation?.id === loc.id;
-      const isOfficial = loc.designation_status === 'OFFICIAL';
+      const isOfficial = isOfficiallyVerifiedShelter(
+        loc.designation_status,
+        loc.verification_status,
+      );
       const cat = (loc.category || '').toUpperCase();
       const candType = safePlacesMap[loc.id]?.candidate_type;
       const isNaturalTerrain = cat === 'NATURAL_ELEVATED_TERRAIN' || candType === 'NATURAL_ELEVATED_TERRAIN';
-      const isShelter = isOfficial || cat.includes('OFFICIAL_FLOOD_SHELTER') || cat.includes('CYCLONE_SHELTER');
+      const isShelter = isOfficial;
       const isFlyover = cat.includes('FLYOVER') || candType === 'ELEVATED_INFRASTRUCTURE';
       const isOpenArea = ['OPEN_GROUND', 'PARK', 'PLAYGROUND', 'GARDEN', 'FIELD', 'FARMLAND', 'ROAD'].includes(cat);
       const isHospital = cat.includes('HOSPITAL');
+      const isMedicalFacility =
+        isHospital || cat.includes('HEALTH') || cat.includes('MEDICAL');
 
       const suitability = suitabilityMap[loc.id];
       let markerIcon = isSelected
@@ -536,32 +653,26 @@ export default function MapScreen(): React.JSX.Element {
               ? '🏠'
               : isOpenArea
                 ? '🌳'
-                : isHospital
+                : isMedicalFacility
                   ? '🏥'
                   : '🏛️';
       let bgColor = isSelected
-        ? '#15803D'
-        : isNaturalTerrain
-          ? '#059669'
-          : isFlyover
-            ? '#0284C7'
-            : isOfficial
-              ? '#16A34A'
-              : '#D97706';
+        ? (isOfficial ? '#16A34A' : isMedicalFacility ? '#2563EB' : '#D97706')
+        : isOfficial
+          ? '#16A34A'
+          : isMedicalFacility
+            ? '#2563EB'
+            : '#D97706';
       let badgeText = '';
 
       if (suitability) {
         if (suitability.suitability_classification === 'SUITABILITY_SUPPORTED_BY_EVIDENCE') {
-          bgColor = isNaturalTerrain ? '#059669' : isFlyover ? '#0284C7' : '#16A34A';
           badgeText = isNaturalTerrain ? 'High Ground' : isFlyover ? 'Flyover' : 'Safe';
         } else if (suitability.suitability_classification === 'CONDITIONALLY_SUITABLE') {
-          bgColor = '#D97706';
           badgeText = 'Caution';
         } else if (suitability.suitability_classification === 'NOT_RECOMMENDED') {
-          bgColor = '#EA580C';
           badgeText = 'Higher Risk';
         } else if (suitability.suitability_classification === 'EXCLUDED') {
-          bgColor = '#DC2626';
           markerIcon = '🚫';
           badgeText = 'Unsafe';
         }
@@ -575,7 +686,11 @@ export default function MapScreen(): React.JSX.Element {
           ? 'Elevated Flyover'
           : isOfficial
             ? 'Official Shelter'
-            : formatCategoryLabel(loc.category);
+            : formatSafeLocationCategoryLabel(
+                loc.category,
+                loc.designation_status,
+                loc.verification_status,
+              );
       el.title = `${loc.name || typeLabel} (${typeLabel})${badgeText ? ` — ${badgeText}` : ''}`;
       el.innerHTML = `
         <div class="marker-inner" style="background-color: ${bgColor}; width: ${isSelected ? '36px' : '28px'}; height: ${isSelected ? '36px' : '28px'}; font-size: ${isSelected ? '18px' : '14px'}; border-color: ${isSelected ? '#F59E0B' : '#FFFFFF'}; display: flex; align-items: center; justify-content: center;">
@@ -595,6 +710,50 @@ export default function MapScreen(): React.JSX.Element {
       safeLocationMarkersRef.current.push(marker);
     }
   }, [safeLocations, safePlacesMap, userSelectedSafeLocation, suitabilityMap]);
+
+  useEffect(() => {
+    mainpuriLocationMarkersRef.current.forEach((marker) => marker.remove());
+    mainpuriLocationMarkersRef.current = [];
+
+    const map = mapRef.current;
+    if (!map) return;
+
+    for (const location of visibleMainpuriLocations) {
+      if (location.latitude == null || location.longitude == null) continue;
+
+      const markerElement = document.createElement('button');
+      markerElement.type = 'button';
+      markerElement.className = 'custom-maplibre-marker mainpuri-location-marker';
+      markerElement.setAttribute('aria-label', `Show ${location.name}`);
+      markerElement.title = `${location.name} — not a designated disaster shelter`;
+
+      const markerInner = document.createElement('span');
+      markerInner.className = 'marker-inner';
+      markerInner.textContent =
+        location.category === 'hospital' || location.category === 'healthcare_centre' ? '✚' : '!';
+      markerInner.style.backgroundColor = getSafeLocationMarkerColor(location);
+      markerElement.appendChild(markerInner);
+
+      const selectMarker = (event: Event) => {
+        event.stopPropagation();
+        handleSelectMainpuriLocation(location);
+      };
+      markerElement.addEventListener('click', selectMarker);
+      markerElement.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          selectMarker(event);
+        }
+      });
+
+      const marker = new maplibregl.Marker({ element: markerElement, anchor: 'bottom' })
+        .setLngLat([location.longitude, location.latitude])
+        .addTo(map);
+      mainpuriLocationMarkersRef.current.push(marker);
+    }
+
+    focusMainpuriLocations(visibleMainpuriLocations);
+  }, [focusMainpuriLocations, handleSelectMainpuriLocation, visibleMainpuriLocations]);
 
   useEffect(() => {
     const source = mapRef.current?.getSource('evacuation-route') as maplibregl.GeoJSONSource | undefined;
@@ -860,6 +1019,19 @@ export default function MapScreen(): React.JSX.Element {
             🇮🇳 India ({disasterCounts.total})
           </button>
 
+          <button
+            className={`filter-pill ${showMainpuriSafeLocations ? 'active' : ''}`}
+            onClick={() => {
+              const open = !showMainpuriSafeLocations;
+              setShowMainpuriSafeLocations(open);
+              if (open) focusMainpuriLocations(visibleMainpuriLocations);
+            }}
+            aria-pressed={showMainpuriSafeLocations}
+            title="Search and filter offline Mainpuri safe-location records"
+          >
+            🛟 Mainpuri Locations ({validMainpuriLocations.length})
+          </button>
+
           {(['ALL', 'EARTHQUAKE', 'FLOOD', 'CYCLONE'] as FilterCategory[]).map((cat) => (
             <button
               key={cat}
@@ -908,7 +1080,12 @@ export default function MapScreen(): React.JSX.Element {
               return (
                 <option key={loc.id} value={loc.id}>
                   {distLabel}
-                  {loc.name || 'Shelter'} — {formatCategoryLabel(loc.category)}
+                  {loc.name || 'Shelter'} —{' '}
+                  {formatSafeLocationCategoryLabel(
+                    loc.category,
+                    loc.designation_status,
+                    loc.verification_status,
+                  )}
                   {ptsLabel}
                 </option>
               );
@@ -972,6 +1149,32 @@ export default function MapScreen(): React.JSX.Element {
 
       <div className="map-container" ref={mapContainerRef} />
 
+      {mapTilesUnavailable && (
+        <div className="map-tile-notice" role="status">
+          Online map tiles are unavailable. Location records and markers remain available offline.
+        </div>
+      )}
+
+      <div className="mainpuri-map-legend" aria-label="Safe location map legend">
+        <strong>Mainpuri map legend</strong>
+        <span><i className="legend-dot green" /> Officially designated shelter</span>
+        <span><i className="legend-dot blue" /> Hospital / medical facility</span>
+        <span><i className="legend-dot orange" /> Potential facility / safe area, unverified</span>
+        <span><i className="legend-dot red" /> Verified hazard / affected area (none verified)</span>
+      </div>
+
+      {showMainpuriSafeLocations && (
+        <MainpuriSafeLocationsPanel
+          locations={validMainpuriLocations}
+          selectedLocationId={selectedMainpuriLocationId}
+          userCoordinates={mainpuriUserCoordinates}
+          onClose={() => setShowMainpuriSafeLocations(false)}
+          onSelectLocation={handleSelectMainpuriLocation}
+          onUserCoordinatesChange={handleMainpuriUserCoordinatesChange}
+          onVisibleLocationsChange={handleVisibleMainpuriLocationsChange}
+        />
+      )}
+
       {feedbackToast && (
         <div className="location-feedback-toast">
           <span>{feedbackToast}</span>
@@ -1032,8 +1235,20 @@ export default function MapScreen(): React.JSX.Element {
           </div>
 
           <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', fontSize: '0.75rem' }}>
-            <span className={`badge ${userSelectedSafeLocation.designation_status === 'OFFICIAL' ? 'badge-official' : 'badge-unverified'}`}>
-              {formatDesignationLabel(userSelectedSafeLocation.designation_status)}
+            <span
+              className={`badge ${
+                isOfficiallyVerifiedShelter(
+                  userSelectedSafeLocation.designation_status,
+                  userSelectedSafeLocation.verification_status,
+                )
+                  ? 'badge-official'
+                  : 'badge-unverified'
+              }`}
+            >
+              {formatSafeLocationDesignationLabel(
+                userSelectedSafeLocation.designation_status,
+                userSelectedSafeLocation.verification_status,
+              )}
             </span>
             <span className={`badge ${userSelectedSafeLocation.verification_status === 'VERIFIED' ? 'badge-verified' : 'badge-unverified'}`}>
               {formatVerificationLabel(userSelectedSafeLocation.verification_status)}

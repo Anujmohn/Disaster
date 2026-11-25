@@ -1,0 +1,130 @@
+{
+  "district": "Mainpuri",
+  "state": "Uttar Pradesh",
+  "country": "India",
+  "district_boundary": {
+    "source_url": "https://www.openstreetmap.org/relation/1958606",
+    "source_name": "OpenStreetMap administrative boundary",
+    "bounding_box": {
+      "south": 26.9451393,
+      "north": 27.4733853,
+      "west": 78.6883852,
+      "east": 79.436863
+    }
+  },
+  "data_license": "OpenStreetMap contributors, ODbL 1.0",
+  "locations": [
+    {
+      "id": "osm-node-7188078601",
+      "name": "District Male Hospital Mainpuri",
+      "category": "hospital",
+      "address": "SH84, Mainpuri, Uttar Pradesh 205501, India",
+      "latitude": 27.2307398,
+      "longitude": 79.0406375,
+      "contact": null,
+      "verification_status": "unverified",
+      "designation_status": "not_designated",
+      "verification_detail": "OpenStreetMap records this hospital with source=OpenGovernmentData. Current operation and disaster-shelter designation are not verified.",
+      "source_url": "https://www.openstreetmap.org/node/7188078601",
+      "source_name": "OpenStreetMap node; source tag: OpenGovernmentData"
+    },
+    {
+      "id": "osm-node-7177530126",
+      "name": "District Women Hospital Mainpuri",
+      "category": "hospital",
+      "address": "SH84, Mainpuri, Uttar Pradesh 205001, India",
+      "latitude": 27.2291335,
+      "longitude": 79.0397389,
+      "contact": null,
+      "verification_status": "unverified",
+      "designation_status": "not_designated",
+      "verification_detail": "OpenStreetMap records this hospital with source=OpenGovernmentData. Current operation and disaster-shelter designation are not verified.",
+      "source_url": "https://www.openstreetmap.org/node/7177530126",
+      "source_name": "OpenStreetMap node; source tag: OpenGovernmentData"
+    },
+    {
+      "id": "osm-node-7189894797",
+      "name": "Government Hospital, Bankhdia",
+      "category": "hospital",
+      "address": "Bichhawa, Sultanganj block, Bhogaon tehsil, Mainpuri, Uttar Pradesh 205267, India",
+      "latitude": 27.3353526,
+      "longitude": 79.0604711,
+      "contact": null,
+      "verification_status": "unverified",
+      "designation_status": "not_designated",
+      "verification_detail": "OpenStreetMap records this hospital with source=OpenGovernmentData. Current operation and disaster-shelter designation are not verified.",
+      "source_url": "https://www.openstreetmap.org/node/7189894797",
+      "source_name": "OpenStreetMap node; source tag: OpenGovernmentData"
+    },
+    {
+      "id": "osm-node-7181048668",
+      "name": "Government Hospital, Vyonti Khurd",
+      "category": "hospital",
+      "address": "Vyonti Khurd, Sultanganj block, Bhogaon tehsil, Mainpuri, Uttar Pradesh 205001, India",
+      "latitude": 27.2220761,
+      "longitude": 79.1020426,
+      "contact": null,
+      "verification_status": "unverified",
+      "designation_status": "not_designated",
+      "verification_detail": "OpenStreetMap records this hospital with source=OpenGovernmentData. Current operation and disaster-shelter designation are not verified.",
+      "source_url": "https://www.openstreetmap.org/node/7181048668",
+      "source_name": "OpenStreetMap node; source tag: OpenGovernmentData"
+    },
+    {
+      "id": "osm-node-7177108950",
+      "name": "Government Hospital, Elavans",
+      "category": "hospital",
+      "address": "Elavans, Kishani block, Bhogaon tehsil, Mainpuri, Uttar Pradesh 206303, India",
+      "latitude": 27.2530022,
+      "longitude": 79.1578607,
+      "contact": null,
+      "verification_status": "unverified",
+      "designation_status": "not_designated",
+      "verification_detail": "OpenStreetMap records this hospital with source=OpenGovernmentData. Current operation and disaster-shelter designation are not verified.",
+      "source_url": "https://www.openstreetmap.org/node/7177108950",
+      "source_name": "OpenStreetMap node; source tag: OpenGovernmentData"
+    },
+    {
+      "id": "osm-node-7187317616",
+      "name": "Government Hospital, Naviganj",
+      "category": "healthcare_centre",
+      "address": "Naviganj, Bewar block, Bhogaon tehsil, Mainpuri, Uttar Pradesh 206301, India",
+      "latitude": 27.1892364,
+      "longitude": 79.383696,
+      "contact": null,
+      "verification_status": "unverified",
+      "designation_status": "not_designated",
+      "verification_detail": "OpenStreetMap records this healthcare centre with source=OpenGovernmentData. Current operation and disaster-shelter designation are not verified.",
+      "source_url": "https://www.openstreetmap.org/node/7187317616",
+      "source_name": "OpenStreetMap node; source tag: OpenGovernmentData"
+    },
+    {
+      "id": "osm-node-7175544230",
+      "name": "Government Hospital, Navin Swasthya Kendra",
+      "category": "hospital",
+      "address": "Karhal, Mainpuri, Uttar Pradesh 205264, India",
+      "latitude": 27.0132181,
+      "longitude": 79.0149406,
+      "contact": null,
+      "verification_status": "unverified",
+      "designation_status": "not_designated",
+      "verification_detail": "OpenStreetMap records this hospital with source=OpenGovernmentData. Current operation and disaster-shelter designation are not verified.",
+      "source_url": "https://www.openstreetmap.org/node/7175544230",
+      "source_name": "OpenStreetMap node; source tag: OpenGovernmentData"
+    },
+    {
+      "id": "osm-node-7189384805",
+      "name": "Government Hospital, Kusamara",
+      "category": "hospital",
+      "address": "Kusamara, Kishani block, Bhogaon tehsil, Mainpuri, Uttar Pradesh 205304, India",
+      "latitude": 27.1045327,
+      "longitude": 79.2873212,
+      "contact": null,
+      "verification_status": "unverified",
+      "designation_status": "not_designated",
+      "verification_detail": "OpenStreetMap records this hospital with source=OpenGovernmentData. Current operation and disaster-shelter designation are not verified.",
+      "source_url": "https://www.openstreetmap.org/node/7189384805",
+      "source_name": "OpenStreetMap node; source tag: OpenGovernmentData"
+    }
+  ]
+}

@@ -20,3 +20,7 @@ export const USER_LOCATION_ZOOM = 14;
 /** Initial fallback camera position (India overview: lng 78.9629, lat 20.5937) */
 export const DEFAULT_CENTER: [number, number] = [78.9629, 20.5937];
 export const DEFAULT_ZOOM = 4.5;
+
+/** Mainpuri city center from OpenStreetMap; used for the initial local safe-locations view. */
+export const MAINPURI_CENTER: [number, number] = [79.0271702, 27.2270677];
+export const MAINPURI_ZOOM = 9.5;

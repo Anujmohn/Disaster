@@ -24,6 +24,38 @@ export function formatDesignationLabel(status: string): string {
   }
 }
 
+export function isOfficiallyVerifiedShelter(
+  designationStatus: string,
+  verificationStatus: string,
+): boolean {
+  return designationStatus === 'OFFICIAL' && verificationStatus === 'VERIFIED';
+}
+
+export function formatSafeLocationDesignationLabel(
+  designationStatus: string,
+  verificationStatus: string,
+): string {
+  if (designationStatus === 'OFFICIAL' && !isOfficiallyVerifiedShelter(designationStatus, verificationStatus)) {
+    return 'Shelter designation unverified';
+  }
+  return formatDesignationLabel(designationStatus);
+}
+
+export function formatSafeLocationCategoryLabel(
+  category: string,
+  designationStatus: string,
+  verificationStatus: string,
+): string {
+  const mentionsShelter = category.toUpperCase().includes('SHELTER');
+  if (
+    (designationStatus === 'OFFICIAL' || mentionsShelter) &&
+    !isOfficiallyVerifiedShelter(designationStatus, verificationStatus)
+  ) {
+    return 'Shelter designation unverified';
+  }
+  return formatCategoryLabel(category);
+}
+
 export function formatVerificationLabel(status: string): string {
   switch (status) {
     case 'VERIFIED':

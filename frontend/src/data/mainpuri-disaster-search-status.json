@@ -1,0 +1,62 @@
+{
+  "district": "Mainpuri",
+  "boundary_source_url": "https://www.openstreetmap.org/relation/1958606",
+  "categories": {
+    "disaster_shelter": {
+      "title": "Official emergency shelters",
+      "status": "partial_no_verified_records",
+      "summary": "No shelter was found by the district-bounded amenity=shelter query. Broader emergency=shelter searches timed out, and the district's DDMP is published but no coordinate-level shelter entry was verified for this map. No official shelter marker is shown.",
+      "sources": [
+        {
+          "name": "OpenStreetMap Overpass API — amenity=shelter query",
+          "url": "https://overpass-turbo.eu/?Q=%5Bout%3Ajson%5D%5Btimeout%3A35%5D%3B%28node%5Bamenity%3Dshelter%5D%28area%3A3601958606%29%3Bway%5Bamenity%3Dshelter%5D%28area%3A3601958606%29%3Brelation%5Bamenity%3Dshelter%5D%28area%3A3601958606%29%3B%29%3Bout%20center%20tags%3B",
+          "outcome": "Completed: 0 matches"
+        },
+        {
+          "name": "Mainpuri District Disaster Management page",
+          "url": "https://mainpuri.nic.in/disaster-management/",
+          "outcome": "Official page lists the district DDMP"
+        },
+        {
+          "name": "Mainpuri District Disaster Management Plan (2018 PDF)",
+          "url": "https://cdn.s3waas.gov.in/s33644a684f98ea8fe223c713b77189a77/uploads/2018/02/2018021658.pdf",
+          "outcome": "No map-ready shelter record verified"
+        }
+      ]
+    },
+    "potential_safe_area": {
+      "title": "Potential higher-ground / safe areas",
+      "status": "completed_no_matches",
+      "summary": "The district-bounded search for mapped peaks, hills, and emergency assembly points returned 0 matches. No elevation- or hazard-validated potential safe area is available to map.",
+      "sources": [
+        {
+          "name": "OpenStreetMap Overpass API — natural=peak, natural=hill, place=peak, emergency=assembly_point",
+          "url": "https://overpass-turbo.eu/?Q=%5Bout%3Ajson%5D%5Btimeout%3A20%5D%3B%28node%5Bnatural%3Dpeak%5D%28area%3A3601958606%29%3Bnode%5Bnatural%3Dhill%5D%28area%3A3601958606%29%3Bnode%5Bplace%3Dpeak%5D%28area%3A3601958606%29%3Bnode%5Bemergency%3Dassembly_point%5D%28area%3A3601958606%29%3B%29%3Bout%20center%20tags%3B",
+          "outcome": "Completed: 0 matches"
+        },
+        {
+          "name": "Mainpuri district boundary (OSM relation 1958606)",
+          "url": "https://www.openstreetmap.org/relation/1958606",
+          "outcome": "Used to restrict the search to Mainpuri"
+        }
+      ]
+    },
+    "disaster_risk_area": {
+      "title": "Verified hazard / affected areas",
+      "status": "search_timed_out",
+      "summary": "The district-bounded flood and waterlogging tag search timed out. No verified hazard-area record is available to map; this is not evidence that the district has no flood risk.",
+      "sources": [
+        {
+          "name": "OpenStreetMap Overpass API — flood / waterlogging tag search",
+          "url": "https://overpass-turbo.eu/?Q=%5Bout%3Ajson%5D%5Btimeout%3A20%5D%3B%28node%5Bhazard%3Dflood%5D%28area%3A3601958606%29%3Bnode%5Bflood_prone%3Dyes%5D%28area%3A3601958606%29%3Bnode%5Bwater%3Dpond%5D%28area%3A3601958606%29%3B%29%3Bout%20center%20tags%3B",
+          "outcome": "Timed out; no result count"
+        },
+        {
+          "name": "Mainpuri District Disaster Management page",
+          "url": "https://mainpuri.nic.in/disaster-management/",
+          "outcome": "Official disaster-management source identified; no coordinate-level hazard record verified"
+        }
+      ]
+    }
+  }
+}
