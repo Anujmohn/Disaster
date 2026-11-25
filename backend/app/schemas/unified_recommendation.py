@@ -9,7 +9,7 @@ from pydantic import Field
 from app.models.enums import CrisisType, DesignationStatus, VerificationStatus
 from app.schemas.common import SchemaModel
 from app.schemas.disaster_search import DisasterEventSummary, UserLocation
-from app.schemas.recommendation import SuitabilityClassification
+from app.schemas.recommendation import StageDiagnostics, SuitabilityClassification
 from app.schemas.route import RouteClassification, RouteDetailItem
 
 
@@ -17,6 +17,7 @@ class UnifiedRecommendationStatus(str, Enum):
     RECOMMENDATIONS_AVAILABLE = "RECOMMENDATIONS_AVAILABLE"
     LIMITED_RECOMMENDATIONS = "LIMITED_RECOMMENDATIONS"
     NO_SUITABLE_DESTINATION_FOUND = "NO_SUITABLE_DESTINATION_FOUND"
+    NO_CANDIDATES_FOUND = "NO_CANDIDATES_FOUND"
     NO_ROUTE_AVAILABLE = "NO_ROUTE_AVAILABLE"
     INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
     DISASTER_CONTEXT_UNAVAILABLE = "DISASTER_CONTEXT_UNAVAILABLE"
@@ -97,6 +98,7 @@ class UnifiedRecommendationResponse(SchemaModel):
     total_routed_destinations: int = 0
     recommendations: list[RecommendedDestinationItem] = Field(default_factory=list)
     excluded_destinations_count: int = 0
+    diagnostics: StageDiagnostics | None = None
     methodology_and_ranking_notes: list[str] = Field(default_factory=list)
     overall_uncertainties: list[str] = Field(default_factory=list)
     safety_disclaimer: str

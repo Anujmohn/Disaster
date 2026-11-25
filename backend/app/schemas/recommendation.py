@@ -122,6 +122,36 @@ class AssessRecommendationsRequest(SchemaModel):
     limit: int = Field(default=50, ge=1, le=200, description="Maximum number of candidate locations to assess")
 
 
+class CandidateRejectionDetail(SchemaModel):
+    candidate_id: UUID | None = None
+    name: str | None = None
+    category: str
+    distance_km: float
+    suitability_classification: SuitabilityClassification
+    primary_reason: str
+    detailed_reasons: list[str] = Field(default_factory=list)
+
+
+class StageDiagnostics(SchemaModel):
+    user_coordinates: dict[str, float] = Field(default_factory=dict)
+    disaster_type: CrisisType
+    search_radii_attempted_m: list[float] = Field(default_factory=list)
+    effective_radius_m: float = 0.0
+    data_sources_requested: list[str] = Field(default_factory=list)
+    data_sources_succeeded: list[str] = Field(default_factory=list)
+    data_sources_failed: list[str] = Field(default_factory=list)
+    raw_geographical_features_found: int = 0
+    valid_candidates_discovered: int = 0
+    enrichment_status: dict[str, Any] = Field(default_factory=dict)
+    candidates_assessed: int = 0
+    candidates_suitable_with_evidence: int = 0
+    candidates_conditionally_suitable: int = 0
+    candidates_not_recommended: int = 0
+    candidates_excluded: int = 0
+    candidates_insufficient_data: int = 0
+    rejections: list[CandidateRejectionDetail] = Field(default_factory=list)
+
+
 class AssessRecommendationsResponse(SchemaModel):
     success: bool = True
     recommendation_run_id: UUID
@@ -135,6 +165,7 @@ class AssessRecommendationsResponse(SchemaModel):
     total_excluded: int = 0
     total_insufficient_data: int = 0
     assessed_locations: list[LocationSuitabilityAssessmentItem] = Field(default_factory=list)
+    diagnostics: StageDiagnostics | None = None
     assessment_methodology: str
     overall_data_limitations: list[str] = Field(default_factory=list)
     safety_disclaimer: str

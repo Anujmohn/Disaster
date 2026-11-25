@@ -9,12 +9,14 @@
  * 5. Explicit user-controlled location refresh.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { Capacitor } from '@capacitor/core';
 import {
   getCurrentBrowserLocation,
   BrowserGeolocationError,
   checkGeolocationAvailability,
 } from '../services/browserLocationService';
+import { bleChatService } from '../services/bleChatService';
 import {
   validateLocation,
   LocationData,
@@ -25,7 +27,7 @@ type ScreenState =
   | { status: 'idle' }
   | { status: 'loading' }
   | { status: 'success'; location: LocationData }
-  | { status: 'permission_denied' }
+  | { status: 'permission_denied'; permanentlyDenied?: boolean }
   | { status: 'insecure_context' }
   | { status: 'gps_error'; message: string }
   | { status: 'network_error'; message: string }
@@ -46,6 +48,41 @@ function formatDate(iso: string): string {
 
 export default function LocationScreen(): React.JSX.Element {
   const [state, setState] = useState<ScreenState>({ status: 'idle' });
+  const isNative = Capacitor.isNativePlatform();
+
+  useEffect(() => {
+    if (!isNative) return;
+    let isMounted = true;
+
+    const refreshPermState = async () => {
+      const perm = await bleChatService.checkLocationPermission();
+      if (!isMounted) return;
+      if (perm.granted) {
+        setState((prev) => (prev.status === 'permission_denied' ? { status: 'idle' } : prev));
+      }
+    };
+
+    refreshPermState();
+    const permSub = bleChatService.onPermissionsChanged((data) => {
+      if (!isMounted) return;
+      if (data.hasLocationPermissions) {
+        setState((prev) => (prev.status === 'permission_denied' ? { status: 'idle' } : prev));
+      }
+    });
+
+    const onVisibility = () => {
+      if (!document.hidden) {
+        refreshPermState();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      isMounted = false;
+      document.removeEventListener('visibilitychange', onVisibility);
+      permSub?.then((h) => h.remove());
+    };
+  }, [isNative]);
 
   async function handleGetLocation(): Promise<void> {
     setState({ status: 'loading' });
@@ -85,7 +122,7 @@ export default function LocationScreen(): React.JSX.Element {
       if (err && typeof err === 'object' && 'type' in err) {
         const geoErr = err as BrowserGeolocationError;
         if (geoErr.type === 'PERMISSION_DENIED') {
-          setState({ status: 'permission_denied' });
+          setState({ status: 'permission_denied', permanentlyDenied: geoErr.permanentlyDenied });
           return;
         }
         if (geoErr.type === 'INSECURE_CONTEXT') {
@@ -112,7 +149,9 @@ export default function LocationScreen(): React.JSX.Element {
         {/* Status representations */}
         {state.status === 'idle' && (
           <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', fontSize: '0.95rem' }}>
-            Press the button below to acquire your browser's current GPS coordinates and validate them against the PostGIS database.
+            {isNative
+              ? 'Press the button below to acquire your device GPS coordinates and validate them against the PostGIS database.'
+              : "Press the button below to acquire your browser's current GPS coordinates and validate them against the PostGIS database."}
           </p>
         )}
 
@@ -167,7 +206,7 @@ export default function LocationScreen(): React.JSX.Element {
             </div>
 
             <div style={{ marginTop: '12px', fontSize: '0.8rem', color: '#166534', textAlign: 'center' }}>
-              🌐 Live Browser Geolocation (HTML5 W3C Standard)
+              {isNative ? '📍 Device GPS (Android Location)' : '🌐 Live Browser Geolocation (HTML5 W3C Standard)'}
             </div>
           </div>
         )}
@@ -175,10 +214,24 @@ export default function LocationScreen(): React.JSX.Element {
         {state.status === 'permission_denied' && (
           <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '12px', padding: '16px', marginBottom: '24px' }}>
             <div style={{ fontSize: '2rem', marginBottom: '8px' }}>🔒</div>
-            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#991B1B', marginBottom: '6px' }}>Permission Denied</h3>
-            <p style={{ fontSize: '0.875rem', color: '#7F1D1D', lineHeight: 1.4 }}>
-              Location access was denied. Please click the permissions icon in your browser's address bar, allow location access, and try again.
+            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#991B1B', marginBottom: '6px' }}>Location Permission Required</h3>
+            <p style={{ fontSize: '0.875rem', color: '#7F1D1D', lineHeight: 1.4, marginBottom: isNative && state.permanentlyDenied ? '12px' : 0 }}>
+              {isNative
+                ? state.permanentlyDenied
+                  ? 'Location permission was denied. Open Android App Settings, enable Location permission for Disaster Safety, and return here.'
+                  : 'Location access is required to retrieve your GPS coordinates. Tap the button below to grant permission.'
+                : "Location access was denied. Please click the permissions icon in your browser's address bar, allow location access, and try again."}
             </p>
+            {isNative && state.permanentlyDenied && (
+              <button
+                type="button"
+                className="action-btn-pill"
+                style={{ width: '100%', justifyContent: 'center', background: '#991B1B', color: '#FFFFFF', border: 'none' }}
+                onClick={() => bleChatService.openAppSettings()}
+              >
+                Open App Settings
+              </button>
+            )}
           </div>
         )}
 

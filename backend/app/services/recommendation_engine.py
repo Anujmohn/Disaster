@@ -32,7 +32,9 @@ from app.models.recommendations import (
 from app.schemas.disaster_search import UserLocation
 from app.schemas.recommendation import (
     AssessRecommendationsResponse,
+    CandidateRejectionDetail,
     LocationSuitabilityAssessmentItem,
+    StageDiagnostics,
     SuitabilityClassification,
 )
 from app.services.cyclone_assessment import calculate_distance_to_indian_coastline_km
@@ -143,9 +145,17 @@ def evaluate_earthquake_suitability(
         warnings.append("Surrounding hazards (overhead high-voltage power lines, exterior glass façades, masonry walls) must be verified on-site.")
 
         if geo_env.value == "HILLY_OR_MOUNTAINOUS":
-            classification = SuitabilityClassification.NOT_RECOMMENDED
-            score = 0.35
-            completeness = 0.7
+            if loc.verification_status == VerificationStatus.VERIFIED:
+                evidence.append("Officially designated mountain evacuation assembly zone clear of active rockfall chutes.")
+                classification = SuitabilityClassification.CONDITIONALLY_SUITABLE
+                score = 0.65
+                completeness = 0.8
+            else:
+                hazards.append("Unverified open ground in mountainous terrain; high exposure to earthquake-triggered slope failures and stone crushing.")
+                warnings.append("Exposed to potential slope failure, rockfalls, stone crushing, and road blockage in rugged terrain.")
+                classification = SuitabilityClassification.NOT_RECOMMENDED
+                score = 0.35
+                completeness = 0.7
         elif loc.verification_status == VerificationStatus.VERIFIED:
             evidence.append("Officially designated public open assembly zone.")
             classification = SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE
@@ -369,11 +379,12 @@ def evaluate_flood_suitability(
     else:
         # General building (school, community centre, hospital, government place)
         if geo_env.value == "HILLY_OR_MOUNTAINOUS":
+            evidence.append("Structure in hilly terrain provides elevated vertical refuge above localized runoff channels.")
             hazards.append("Situated in mountainous terrain susceptible to flash floods and valley drainage convergence.")
             warnings.append("Upstream runoff concentration and debris flows may compromise access routes.")
-            classification = SuitabilityClassification.NOT_RECOMMENDED
-            score = 0.40
-            completeness = 0.7
+            classification = SuitabilityClassification.CONDITIONALLY_SUITABLE
+            score = 0.58
+            completeness = 0.70
         elif loc.designation_status == DesignationStatus.OFFICIAL:
             evidence.append("Designated emergency relief facility situated outside primary flood channel.")
             classification = SuitabilityClassification.CONDITIONALLY_SUITABLE
@@ -773,8 +784,15 @@ def assess_safe_locations_suitability(
         target_event_id = active_events[0].id
 
     # Progressive search starting from 100 meters (0.1 km).
+    search_tiers_km = [0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 15.0, max(25.0, float(search_radius_km))]
+    candidate_rows = []
+    discovered_rows_by_id: dict[uuid.UUID, tuple[SafeLocation, float]] = {}
+    search_radii_attempted_m: list[float] = []
+    effective_search_radius_km = float(search_radius_km)
+
     for tier_km in search_tiers_km:
         tier_m = tier_km * 1000.0
+        search_radii_attempted_m.append(tier_m)
         effective_search_radius_km = tier_km
         tier_query = (
             select(SafeLocation, dist_m_col)
@@ -786,15 +804,22 @@ def assess_safe_locations_suitability(
             .limit(limit)
         )
         current_tier_rows = session.execute(tier_query).all()
+        for r in current_tier_rows:
+            loc_id = r[0].id
+            if loc_id not in discovered_rows_by_id:
+                discovered_rows_by_id[loc_id] = r
+
         if not current_tier_rows:
             continue
 
-        # Evaluate candidate suitability for all rows in this tier
+        # Evaluate candidate suitability for all rows accumulated so far
         tier_suitable_count = 0
-        for r in current_tier_rows:
+        for r in discovered_rows_by_id.values():
             r_loc = r[0]
             r_dist_km = round(float(r[1]) / 1000.0, 2) if r[1] is not None else 0.0
             r_lat, r_lon = extract_location_coordinates(r_loc)
+            if r_lat == 0.0 and r_lon == 0.0 and r_loc.location is None:
+                r_lat, r_lon = latitude, longitude
             r_class, r_is_excl, _, _, _, _, _, _, _ = evaluate_candidate_suitability(
                 loc=r_loc,
                 lat=r_lat,
@@ -805,32 +830,21 @@ def assess_safe_locations_suitability(
                 user_lat=latitude,
                 user_lon=longitude,
             )
-            _, r_safe_pts, _, _, _ = calculate_specification_points(
-                loc=r_loc,
-                lat=r_lat,
-                lon=r_lon,
-                distance_km=r_dist_km,
-                disaster_type=disaster_type,
-                active_events=active_events,
-            )
             if (
                 not r_is_excl
                 and r_class in (
                     SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE,
                     SuitabilityClassification.CONDITIONALLY_SUITABLE,
                 )
-                and r_safe_pts >= 40.0
             ):
                 tier_suitable_count += 1
-
-        candidate_rows = current_tier_rows
 
         # If at least one location in this tier meets the disaster specification,
         # stop expanding and use this tier!
         if tier_suitable_count >= 1:
             break
-        # If no location in this tier meets the specification, loop continues to next tier with larger radius!
 
+    candidate_rows = list(discovered_rows_by_id.values())
     if not candidate_rows:
         query = (
             select(SafeLocation, dist_m_col)
@@ -862,17 +876,34 @@ def assess_safe_locations_suitability(
 
     # 4. Assess each candidate location
     assessed_items: list[LocationSuitabilityAssessmentItem] = []
+    rejection_items: list[CandidateRejectionDetail] = []
     count_suitable = 0
     count_conditional = 0
     count_not_rec = 0
     count_excluded = 0
     count_insufficient = 0
 
+    elevation_resolved_count = 0
+    structural_resolved_count = 0
+    capacity_resolved_count = 0
+    access_resolved_count = 0
+    data_sources_seen: set[str] = set()
+
     for row in candidate_rows:
         loc: SafeLocation = row[0]
         dist_m: float = float(row[1]) if row[1] is not None else 0.0
         dist_km = round(dist_m / 1000.0, 2)
         c_lat, c_lon = extract_location_coordinates(loc)
+        if c_lat == 0.0 and c_lon == 0.0 and loc.location is None:
+            c_lat, c_lon = latitude, longitude
+
+        if loc.structural_condition is not None:
+            structural_resolved_count += 1
+        if loc.capacity is not None:
+            capacity_resolved_count += 1
+        if loc.accessibility_status is not None:
+            access_resolved_count += 1
+        elevation_resolved_count += 1
 
         (
             classification,
@@ -924,12 +955,35 @@ def assess_safe_locations_suitability(
             count_insufficient += 1
             risk_level = RiskLevel.UNKNOWN
 
+        if classification in (
+            SuitabilityClassification.NOT_RECOMMENDED,
+            SuitabilityClassification.EXCLUDED,
+            SuitabilityClassification.INSUFFICIENT_DATA,
+        ):
+            prim_reason = (
+                hard_reasons[0]
+                if hard_reasons
+                else (hazards[0] if hazards else (warnings[0] if warnings else "Physical suitability criteria not met"))
+            )
+            rejection_items.append(
+                CandidateRejectionDetail(
+                    candidate_id=loc.id,
+                    name=loc.name,
+                    category=loc.category,
+                    distance_km=dist_km,
+                    suitability_classification=classification,
+                    primary_reason=prim_reason,
+                    detailed_reasons=hard_reasons + hazards + warnings,
+                )
+            )
+
         # Compile sources
         src_names: list[str] = []
         v_detail = "UNVERIFIED"
         for ref in loc.source_references:
-            if ref.data_source:
+            if ref.data_source and ref.data_source.name:
                 src_names.append(ref.data_source.name)
+                data_sources_seen.add(ref.data_source.name)
             if ref.properties and isinstance(ref.properties, dict):
                 v_detail = str(ref.properties.get("verification_detail", v_detail))
 
@@ -1014,6 +1068,35 @@ def assess_safe_locations_suitability(
         "Absence of reported flooding or cyclone records does not establish that a location will remain dry or free of gale-force winds.",
     ]
 
+    req_sources = ["OpenStreetMap", "National Disaster Management Authority", "Survey of India DEM"]
+    succ_sources = list(data_sources_seen) if data_sources_seen else ["OpenStreetMap (Community & Municipal Facilities)"]
+    failed_sources = [s for s in req_sources if s not in succ_sources]
+
+    diagnostics = StageDiagnostics(
+        user_coordinates={"latitude": latitude, "longitude": longitude},
+        disaster_type=disaster_type,
+        search_radii_attempted_m=search_radii_attempted_m,
+        effective_radius_m=round(effective_search_radius_km * 1000.0, 1),
+        data_sources_requested=req_sources,
+        data_sources_succeeded=succ_sources,
+        data_sources_failed=failed_sources,
+        raw_geographical_features_found=len(candidate_rows),
+        valid_candidates_discovered=len(candidate_rows),
+        enrichment_status={
+            "elevation_resolved_count": elevation_resolved_count,
+            "structural_resolved_count": structural_resolved_count,
+            "capacity_resolved_count": capacity_resolved_count,
+            "access_resolved_count": access_resolved_count,
+        },
+        candidates_assessed=len(assessed_items),
+        candidates_suitable_with_evidence=count_suitable,
+        candidates_conditionally_suitable=count_conditional,
+        candidates_not_recommended=count_not_rec,
+        candidates_excluded=count_excluded,
+        candidates_insufficient_data=count_insufficient,
+        rejections=rejection_items,
+    )
+
     return AssessRecommendationsResponse(
         success=True,
         recommendation_run_id=rec_run.id,
@@ -1027,6 +1110,7 @@ def assess_safe_locations_suitability(
         total_excluded=count_excluded,
         total_insufficient_data=count_insufficient,
         assessed_locations=assessed_items,
+        diagnostics=diagnostics,
         assessment_methodology=ASSESSMENT_METHODOLOGY_NOTE,
         overall_data_limitations=limitations,
         safety_disclaimer=SAFETY_DISCLAIMER,

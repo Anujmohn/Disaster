@@ -160,7 +160,7 @@ export interface EarthquakeSafetyFields {
 
 export interface FloodSafetyFields {
   distance_from_user_km: number;
-  elevation_m: number;
+  elevation_m: number | null;
   safety_factor: string;
   is_safe_building: boolean;
   safe_building_type: string;
@@ -168,6 +168,34 @@ export interface FloodSafetyFields {
   middle_transect_heights_msl: number[];
   is_elevated_above_transect: boolean;
   transect_summary: string;
+  elevation_difference_from_user_m?: number | null;
+  is_higher_than_user?: boolean;
+  nearest_city?: string | null;
+  candidate_type?: string;
+  elevation_status?: string;
+  elevation_source?: string | null;
+  elevation_resolution_m?: number | null;
+  elevation_retrieval_time?: string | null;
+  elevation_quality?: string;
+  ground_elevation_m?: number | null;
+  structure_height_m?: number | null;
+  structure_height_status?: string;
+  data_availability_status?: string;
+  feature_identifier?: string | null;
+  relative_elevation_m?: number | null;
+  local_terrain_slope_deg?: number | null;
+  terrain_feature_type?: string;
+  drainage_proximity_m?: number | null;
+  flow_accumulation_cells?: number | null;
+  flood_exposure_level?: string;
+  safety_score?: number;
+  safety_category?: string;
+  assessment_reasons?: string[];
+  known_hazards?: string[];
+  data_confidence?: string;
+  search_radius_m?: number;
+  public_access_status?: string;
+  last_updated_time?: string | null;
 }
 
 export interface CycloneSafetyFields {
@@ -183,6 +211,20 @@ export interface SafePlaceItem extends SafeLocationItem {
   distance_m: number;
   suitability_classification: string;
   suitability_score: number;
+  candidate_type?: string;
+  discovery_source?: string;
+  search_radius_m?: number;
+  elevation_m?: number | null;
+  ground_elevation_m?: number | null;
+  structure_height_m?: number | null;
+  structure_height_status?: string;
+  data_availability_status?: string;
+  feature_identifier?: string | null;
+  relative_elevation_m?: number | null;
+  data_confidence?: string;
+  assessment_reasons?: string[];
+  known_hazards?: string[];
+  last_updated_time?: string | null;
   earthquake_fields?: EarthquakeSafetyFields | null;
   flood_fields?: FloodSafetyFields | null;
   cyclone_fields?: CycloneSafetyFields | null;
@@ -201,6 +243,10 @@ export interface FindSafePlacesResponse {
   safe_places: SafePlaceItem[];
   data_sources_queried: string[];
   engine_name: string;
+  engine_status?: string;
+  engine_message?: string;
+  data_availability_status?: string;
+  search_radii_hierarchy_m?: number[];
   disaster_safety_disclaimer: string;
 }
 

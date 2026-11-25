@@ -628,10 +628,9 @@ export default function MapScreen(): React.JSX.Element {
         setSafePlacesMap(pMap);
         setSuitabilityMap((prev) => ({ ...prev, ...sMap }));
       } else {
-        const fb = await fetchNearbySafeLocations({ latitude: lat, longitude: lng, radius_km: 5.0, limit: 20 });
-        if (fb.success) {
-          setSafeLocations(fb.locations);
-        }
+        setSafeLocations([]);
+        setSafePlacesMap({});
+        setEffectiveRadiusKm(res?.effective_radius_km || 2.0);
       }
     } catch (err) {
       console.warn('Safe Place Engine fetch note:', err);
@@ -740,20 +739,22 @@ export default function MapScreen(): React.JSX.Element {
       const isSelected = userSelectedSafeLocation?.id === loc.id;
       const isOfficial = loc.designation_status === 'OFFICIAL';
       const cat = (loc.category || '').toUpperCase();
-      const isShelter = cat.includes('SHELTER');
+      const candType = (loc as any).candidate_type || (safePlacesMap[loc.id] as any)?.candidate_type;
+      const isNaturalTerrain = cat === 'NATURAL_ELEVATED_TERRAIN' || candType === 'NATURAL_ELEVATED_TERRAIN';
+      const isShelter = isOfficial || cat.includes('OFFICIAL_FLOOD_SHELTER') || cat.includes('CYCLONE_SHELTER');
+      const isFlyover = cat.includes('FLYOVER') || candType === 'ELEVATED_INFRASTRUCTURE';
       const isOpenArea = ['OPEN_GROUND', 'PARK', 'PLAYGROUND', 'GARDEN', 'FIELD', 'FARMLAND', 'ROAD'].includes(cat);
       const isHospital = cat.includes('HOSPITAL');
-      const isFlyover = cat.includes('FLYOVER') || cat.includes('BRIDGE');
 
       const suitability = suitabilityMap[loc.id];
-      let markerIcon = isSelected ? '★' : isFlyover ? '🌉' : isShelter ? '🏠' : isOpenArea ? '🌳' : isHospital ? '🏥' : '🏛️';
-      let bgColor = isSelected ? '#15803D' : isOfficial ? '#16A34A' : '#D97706';
+      let markerIcon = isSelected ? '★' : isNaturalTerrain ? '⛰️' : isFlyover ? '🌉' : isShelter ? '🏠' : isOpenArea ? '🌳' : isHospital ? '🏥' : '🏛️';
+      let bgColor = isSelected ? '#15803D' : isNaturalTerrain ? '#059669' : isFlyover ? '#0284C7' : isOfficial ? '#16A34A' : '#D97706';
       let badgeText = '';
 
       if (suitability) {
         if (suitability.suitability_classification === 'SUITABILITY_SUPPORTED_BY_EVIDENCE') {
-          bgColor = '#16A34A';
-          badgeText = 'Safe';
+          bgColor = isNaturalTerrain ? '#059669' : isFlyover ? '#0284C7' : '#16A34A';
+          badgeText = isNaturalTerrain ? 'High Ground' : isFlyover ? 'Flyover' : 'Safe';
         } else if (suitability.suitability_classification === 'CONDITIONALLY_SUITABLE') {
           bgColor = '#D97706';
           badgeText = 'Conditional';
@@ -769,7 +770,14 @@ export default function MapScreen(): React.JSX.Element {
 
       const el = document.createElement('div');
       el.className = `custom-maplibre-marker ${isSelected ? 'selected-safe-marker' : ''}`;
-      el.title = `${loc.name || 'Safe Location'} (${loc.category})${badgeText ? ` - [${badgeText}]` : ''}`;
+      const typeLabel = isNaturalTerrain
+        ? 'Potential Elevated Ground'
+        : isFlyover
+        ? 'Elevated Infrastructure Candidate'
+        : isOfficial
+        ? 'Officially Verified Shelter'
+        : loc.category;
+      el.title = `${loc.name || typeLabel} (${typeLabel})${badgeText ? ` - [${badgeText}]` : ''}`;
       el.innerHTML = `
         <div class="marker-inner" style="background-color: ${bgColor}; width: ${isSelected ? '36px' : '28px'}; height: ${isSelected ? '36px' : '28px'}; font-size: ${isSelected ? '18px' : '14px'}; border-color: ${isSelected ? '#F59E0B' : '#FFFFFF'}; display: flex; align-items: center; justify-content: center;">
           ${markerIcon}
@@ -1554,21 +1562,40 @@ export default function MapScreen(): React.JSX.Element {
                 )}
 
                 {/* 3.b Flood Fields */}
-                {safePlacesMap[selectedSafeLocation.id].flood_fields && (
-                  <div style={{ marginBottom: '8px', borderTop: '1px solid #E2E8F0', paddingTop: '6px' }}>
-                    <div style={{ fontWeight: 700, fontSize: '0.8rem', color: '#0369A1', marginBottom: '4px' }}>
-                      🌊 3.b. Flood Measures:
+                {(() => {
+                  const ff = safePlacesMap[selectedSafeLocation.id]?.flood_fields;
+                  if (!ff) return null;
+                  const elevM = ff.elevation_m != null ? ff.elevation_m : null;
+                  const relM = ff.relative_elevation_m != null ? ff.relative_elevation_m : null;
+                  const radiusM = ff.search_radius_m != null ? Math.round(ff.search_radius_m) : null;
+                  return (
+                    <div style={{ marginBottom: '8px', borderTop: '1px solid #E2E8F0', paddingTop: '6px' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.8rem', color: '#0369A1', marginBottom: '4px' }}>
+                        🌊 3.b. Flood Measures:
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#334155', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                        <div>• <strong>Type:</strong> {ff.candidate_type === 'NATURAL_ELEVATED_TERRAIN' ? '⛰️ Potential Elevated Ground' : ff.candidate_type === 'ELEVATED_INFRASTRUCTURE' ? '🌉 Elevated Infrastructure Candidate' : ff.candidate_type === 'OFFICIAL_FLOOD_SHELTER' ? '🏠 Officially Verified Shelter' : selectedSafeLocation.category}</div>
+                        <div>• <strong>Distance from user:</strong> {ff.distance_from_user_km.toFixed(2)} km {radiusM != null ? `(Priority Radius: ${radiusM}m)` : ''}</div>
+                        <div>• <strong>Total Refuge Elevation:</strong> {elevM != null ? `${elevM.toFixed(1)} m MSL` : 'UNKNOWN'} {relM != null ? `(${relM >= 0 ? '+' : ''}${relM.toFixed(1)}m relative to user)` : ''}</div>
+                        <div>• <strong>Ground Elevation:</strong> {ff.ground_elevation_m != null ? `${ff.ground_elevation_m.toFixed(1)} m MSL` : (elevM != null ? `${elevM.toFixed(1)} m MSL` : 'UNKNOWN')}</div>
+                        <div>• <strong>Structure Height (3D):</strong> {ff.structure_height_m != null ? `+${ff.structure_height_m.toFixed(1)} m (${ff.structure_height_status})` : (ff.structure_height_status || 'UNKNOWN')}</div>
+                        <div>• <strong>Data Source:</strong> {ff.elevation_source || 'Copernicus DEM / Open-Meteo'} ({ff.elevation_quality || 'HIGH'} quality) • {ff.data_availability_status || 'SOURCE_AVAILABLE'}</div>
+                        <div>• <strong>Safety factor:</strong> {ff.safety_factor}</div>
+                        <div>• <strong>Refuge classification:</strong> {ff.safe_building_type}</div>
+                        <div>• <strong>Public Access:</strong> {ff.public_access_status || 'Verification required on-site'}</div>
+                        <div>• <strong>Flood flow prediction:</strong> {ff.flood_flow_prediction}</div>
+                        {ff.assessment_reasons && ff.assessment_reasons.length > 0 && (
+                          <div style={{ marginTop: '3px', background: '#F0F9FF', padding: '4px 6px', borderRadius: '4px', border: '1px solid #BAE6FD' }}>
+                            <strong style={{ color: '#0369A1' }}>Assessment Reasons:</strong>
+                            {ff.assessment_reasons.slice(0, 3).map((r, i) => (
+                              <div key={i} style={{ color: '#0C4A6E', marginTop: '1px' }}>✓ {r}</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <div style={{ fontSize: '0.75rem', color: '#334155', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                      <div>1. <strong>Distance from user:</strong> {safePlacesMap[selectedSafeLocation.id].flood_fields!.distance_from_user_km.toFixed(2)} km</div>
-                      <div>2. <strong>Elevation of place:</strong> {safePlacesMap[selectedSafeLocation.id].flood_fields!.elevation_m.toFixed(1)} m MSL (Height from sea level)</div>
-                      <div>3. <strong>Safety factor:</strong> {safePlacesMap[selectedSafeLocation.id].flood_fields!.safety_factor}</div>
-                      <div>4. <strong>Safe buildings:</strong> {safePlacesMap[selectedSafeLocation.id].flood_fields!.is_safe_building ? '✅ ' + safePlacesMap[selectedSafeLocation.id].flood_fields!.safe_building_type : 'General Facility'}</div>
-                      <div>5. <strong>Flood flow prediction:</strong> {safePlacesMap[selectedSafeLocation.id].flood_fields!.flood_flow_prediction}</div>
-                      <div>• <strong>Middle transect MSL height:</strong> {safePlacesMap[selectedSafeLocation.id].flood_fields!.transect_summary}</div>
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 {/* 3.c Sea Typhoon Fields */}
                 {safePlacesMap[selectedSafeLocation.id].cyclone_fields && (
@@ -1843,54 +1870,112 @@ export default function MapScreen(): React.JSX.Element {
               </button>
             </div>
 
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
               <span className="badge badge-verified">{unifiedRecs.status}</span>
               <span className="badge" style={{ background: '#F1F5F9', color: '#475569' }}>
-                Evaluated: {unifiedRecs.recommendations.length} Safe Places
+                Evaluated: {unifiedRecs.total_candidates_found || unifiedRecs.recommendations.length} Safe Places
               </span>
+              {unifiedRecs.diagnostics && (
+                <span className="badge" style={{ background: '#E0F2FE', color: '#0369A1' }}>
+                  Progressive Scan: {unifiedRecs.diagnostics.effective_radius_m >= 1000 ? `${(unifiedRecs.diagnostics.effective_radius_m / 1000).toFixed(1)} km` : `${unifiedRecs.diagnostics.effective_radius_m.toFixed(0)} m`}
+                </span>
+              )}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '400px', overflowY: 'auto' }}>
-              {unifiedRecs.recommendations.map((rec, idx) => (
-                <div
-                  key={rec.destination_id}
-                  style={{
-                    border: '1px solid #E2E8F0',
-                    borderRadius: '8px',
-                    padding: '10px 12px',
-                    background: idx === 0 ? '#F0FDF4' : '#FFFFFF',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                    <span style={{ fontWeight: 700, fontSize: '0.9rem', color: '#0F172A' }}>
-                      #{idx + 1} {rec.name || 'Shelter Destination'}
-                    </span>
-                    <span className="badge badge-verified">
-                      {rec.total_points != null ? `${rec.total_points.toFixed(0)} pts` : `${rec.distance_km.toFixed(1)} km`}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                    {rec.category} • {rec.distance_km.toFixed(1)} km
-                  </div>
+            {/* Stage Diagnostics Summary */}
+            {unifiedRecs.diagnostics && (
+              <div style={{ fontSize: '0.75rem', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '6px 10px', marginBottom: '12px', color: '#475569' }}>
+                <div><strong>Data Sources:</strong> {unifiedRecs.diagnostics.data_sources_succeeded.join(', ') || 'OpenStreetMap, Regional Elevation'}</div>
+                <div><strong>Suitability:</strong> {unifiedRecs.diagnostics.candidates_suitable_with_evidence} Evidence-Backed • {unifiedRecs.diagnostics.candidates_conditionally_suitable} Conditional • {unifiedRecs.diagnostics.candidates_excluded + unifiedRecs.diagnostics.candidates_not_recommended} Excluded/Not Recommended</div>
+              </div>
+            )}
 
-                  <button
-                    className="action-btn-pill action-btn-primary"
-                    style={{ fontSize: '0.75rem', padding: '4px 10px' }}
-                    onClick={() => {
-                      const found = safeLocations.find((s) => s.id === rec.destination_id);
-                      if (found) {
-                        handleSelectSafeLocationByUser(found);
-                      }
-                      if (rec.route) {
-                        setActiveRoute(rec.route);
-                      }
-                      setShowUnifiedModal(false);
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '420px', overflowY: 'auto' }}>
+              {unifiedRecs.recommendations.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '24px 16px', background: '#F9FAFB', border: '1px dashed #D1D5DB', borderRadius: '8px' }}>
+                  <div style={{ fontSize: '1.4rem', marginBottom: '8px' }}>🛡️</div>
+                  <div style={{ fontWeight: 600, color: '#374151', fontSize: '0.9rem', marginBottom: '4px' }}>
+                    {unifiedRecs.status === 'NO_CANDIDATES_FOUND'
+                      ? 'No Candidates In Area'
+                      : unifiedRecs.status === 'NO_SUITABLE_DESTINATION_FOUND'
+                      ? 'No Destinations Meet Safety Criteria'
+                      : 'Evacuation Scan Complete'}
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: '#6B7280', maxWidth: '380px', margin: '0 auto' }}>
+                    {unifiedRecs.overall_uncertainties[0] ||
+                      'Progressive discovery scanned from 100m outwards. No safe shelter meeting physical disaster requirements was located.'}
+                  </div>
+                  {unifiedRecs.diagnostics?.rejections && unifiedRecs.diagnostics.rejections.length > 0 && (
+                    <div style={{ marginTop: '12px', textAlign: 'left', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '6px', padding: '8px 10px', fontSize: '0.75rem' }}>
+                      <div style={{ fontWeight: 700, color: '#92400E', marginBottom: '4px' }}>Exclusion & Safety Reasons:</div>
+                      {unifiedRecs.diagnostics.rejections.slice(0, 3).map((rej, rIdx) => (
+                        <div key={rIdx} style={{ color: '#B45309', marginBottom: '2px' }}>
+                          • <strong>{rej.name || rej.category}:</strong> {rej.primary_reason}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                unifiedRecs.recommendations.map((rec, idx) => (
+                  <div
+                    key={rec.destination_id}
+                    style={{
+                      border: '1px solid #E2E8F0',
+                      borderRadius: '8px',
+                      padding: '10px 12px',
+                      background: idx === 0 ? '#F0FDF4' : '#FFFFFF',
                     }}
                   >
-                    Select Destination & Show Route
-                  </button>
-                </div>
-              ))}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                      <span style={{ fontWeight: 700, fontSize: '0.9rem', color: '#0F172A' }}>
+                        #{idx + 1} {rec.name || 'Shelter Destination'}
+                      </span>
+                      <span className="badge badge-verified">
+                        {rec.total_points != null ? `${rec.total_points.toFixed(0)} pts` : `${rec.distance_km.toFixed(1)} km`}
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                      <span className={`badge ${rec.suitability_classification === 'SUITABILITY_SUPPORTED_BY_EVIDENCE' ? 'badge-verified' : 'badge-unverified'}`} style={{ fontSize: '0.7rem' }}>
+                        {rec.suitability_classification === 'SUITABILITY_SUPPORTED_BY_EVIDENCE' ? 'Evidence-Backed' : 'Conditionally Suitable'}
+                      </span>
+                      <span className="badge" style={{ background: '#F1F5F9', color: '#475569', fontSize: '0.7rem' }}>
+                        {rec.category} • {rec.distance_km < 1 ? `${Math.round(rec.distance_km * 1000)} m` : `${rec.distance_km.toFixed(2)} km`}
+                      </span>
+                    </div>
+
+                    {rec.suitability_reasons && rec.suitability_reasons.length > 0 && (
+                      <div style={{ fontSize: '0.75rem', color: '#166534', marginBottom: '4px' }}>
+                        ✓ {rec.suitability_reasons[0]}
+                      </div>
+                    )}
+
+                    {rec.suitability_warnings && rec.suitability_warnings.length > 0 && (
+                      <div style={{ fontSize: '0.72rem', color: '#B45309', marginBottom: '6px', background: '#FEF3C7', padding: '3px 6px', borderRadius: '4px' }}>
+                        ⚠️ {rec.suitability_warnings[0]}
+                      </div>
+                    )}
+
+                    <button
+                      className="action-btn-pill action-btn-primary"
+                      style={{ fontSize: '0.75rem', padding: '4px 10px', marginTop: '4px' }}
+                      onClick={() => {
+                        const found = safeLocations.find((s) => s.id === rec.destination_id);
+                        if (found) {
+                          handleSelectSafeLocationByUser(found);
+                        }
+                        if (rec.route) {
+                          setActiveRoute(rec.route);
+                        }
+                        setShowUnifiedModal(false);
+                      }}
+                    >
+                      Select Destination & Show Route
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

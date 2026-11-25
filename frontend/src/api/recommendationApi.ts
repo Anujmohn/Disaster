@@ -26,10 +26,41 @@ export type UnifiedRecommendationStatus =
   | 'RECOMMENDATIONS_AVAILABLE'
   | 'LIMITED_RECOMMENDATIONS'
   | 'NO_SUITABLE_DESTINATION_FOUND'
+  | 'NO_CANDIDATES_FOUND'
   | 'NO_ROUTE_AVAILABLE'
   | 'INSUFFICIENT_DATA'
   | 'DISASTER_CONTEXT_UNAVAILABLE'
   | 'ASSESSMENT_FAILED';
+
+export interface CandidateRejectionDetail {
+  candidate_id?: string | null;
+  name: string | null;
+  category: string;
+  distance_km: number;
+  suitability_classification: SuitabilityClassification;
+  primary_reason: string;
+  detailed_reasons: string[];
+}
+
+export interface StageDiagnostics {
+  user_coordinates: { latitude?: number; longitude?: number };
+  disaster_type: DisasterType;
+  search_radii_attempted_m: number[];
+  effective_radius_m: number;
+  data_sources_requested: string[];
+  data_sources_succeeded: string[];
+  data_sources_failed: string[];
+  raw_geographical_features_found: number;
+  valid_candidates_discovered: number;
+  enrichment_status: Record<string, any>;
+  candidates_assessed: number;
+  candidates_suitable_with_evidence: number;
+  candidates_conditionally_suitable: number;
+  candidates_not_recommended: number;
+  candidates_excluded: number;
+  candidates_insufficient_data: number;
+  rejections: CandidateRejectionDetail[];
+}
 
 export interface DisasterHazardAssessmentSummary {
   disaster_type: DisasterType;
@@ -87,6 +118,7 @@ export interface UnifiedRecommendationResponse {
   total_routed_destinations: number;
   recommendations: RecommendedDestinationItem[];
   excluded_destinations_count: number;
+  diagnostics?: StageDiagnostics | null;
   methodology_and_ranking_notes: string[];
   overall_uncertainties: string[];
   safety_disclaimer: string;
@@ -147,6 +179,7 @@ export interface AssessRecommendationsResponse {
   total_excluded: number;
   total_insufficient_data: number;
   assessed_locations: LocationSuitabilityAssessmentItem[];
+  diagnostics?: StageDiagnostics | null;
   assessment_methodology: string;
   overall_data_limitations: string[];
   safety_disclaimer: string;

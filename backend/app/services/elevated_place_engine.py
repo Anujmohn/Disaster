@@ -17,6 +17,7 @@ from app.services.city_elevation_data import (
     get_city_height_from_sea_level,
     haversine_distance_km,
 )
+from app.services.flood_assessment import discover_natural_elevated_terrain
 from app.services.recommendation_engine import (
     extract_location_coordinates,
     safe_postgis_to_geojson,
@@ -76,12 +77,11 @@ def is_elevated_place_candidate(loc: SafeLocation) -> tuple[bool, str]:
 
     cat = (loc.category or "").upper()
 
-    # 1. Flyovers / Elevated decks
+    # 1. Flyovers / Elevated decks (strictly exclude ordinary river/canal bridges)
     if (
         "flyover" in name_lower
-        or "elevated" in name_lower
+        or "elevated corridor" in name_lower
         or "viaduct" in name_lower
-        or "bridge" in name_lower
         or cat in ("FLYOVER", "ELEVATED_STRUCTURE")
     ):
         return True, "ELEVATED_FLYOVER"
@@ -156,7 +156,8 @@ def find_elevated_places_near_user(
             logger.debug(f"Dynamic candidate discovery note: {exc}")
 
     # 3. Progressive search starting strictly at 100 meters (0.1 km)
-    search_tiers_km = [0.1, 0.25, 0.5, 1.0, 2.0, 3.5, 5.0, 10.0, 25.0, 50.0, 100.0, 500.0]
+    # Configurable priority tiers: 100m, 250m, 500m, 1000m, 2000m (Section 2)
+    search_tiers_km = [0.1, 0.25, 0.5, 1.0, 2.0]
 
     found_places: list[ElevatedPlaceItem] = []
     effective_radius_km = 0.1
@@ -174,13 +175,12 @@ def find_elevated_places_near_user(
                 func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, tier_m),
                 ~SafeLocation.name.ilike("%refuge zone (%%"),
                 ~SafeLocation.name.ilike("%assembly zone (%%"),
+                ~SafeLocation.name.ilike("%healthcare (%%"),
             )
             .order_by(dist_m_col.asc())
             .limit(limit * 3)
         )
         tier_rows = session.execute(tier_query).all()
-        if not tier_rows:
-            continue
 
         matching_tier_items: list[ElevatedPlaceItem] = []
 

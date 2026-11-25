@@ -9,6 +9,9 @@
  * - Standardized error reporting with actionable messages.
  */
 
+import { Capacitor } from '@capacitor/core';
+import { bleChatService } from './bleChatService';
+
 export interface BrowserLocationResult {
   latitude: number;
   longitude: number;
@@ -28,6 +31,7 @@ export type GeolocationErrorType =
 export interface BrowserGeolocationError {
   type: GeolocationErrorType;
   message: string;
+  permanentlyDenied?: boolean;
 }
 
 /**
@@ -57,7 +61,31 @@ export function checkGeolocationAvailability(): { available: boolean; reason?: s
  * Uses high accuracy, a 15-second timeout, and max 10-second cache.
  */
 export function getCurrentBrowserLocation(): Promise<BrowserLocationResult> {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
+    const isNative = Capacitor.isNativePlatform();
+
+    if (isNative) {
+      const permStatus = await bleChatService.requestLocationPermission();
+      if (!permStatus.granted) {
+        const err: BrowserGeolocationError = {
+          type: 'PERMISSION_DENIED',
+          permanentlyDenied: permStatus.permanentlyDenied,
+          message: permStatus.permanentlyDenied
+            ? 'Location permission was denied. Please enable Location in Android App Settings.'
+            : 'Location permission is required to retrieve your GPS coordinates.',
+        };
+        return reject(err);
+      }
+
+      if (!permStatus.isLocationServicesEnabled) {
+        const err: BrowserGeolocationError = {
+          type: 'POSITION_UNAVAILABLE',
+          message: 'Device Location (GPS) is turned off. Please enable Location in Android Settings.',
+        };
+        return reject(err);
+      }
+    }
+
     const check = checkGeolocationAvailability();
     if (!check.available) {
       const err: BrowserGeolocationError = {
@@ -85,7 +113,9 @@ export function getCurrentBrowserLocation(): Promise<BrowserLocationResult> {
         switch (geoError.code) {
           case geoError.PERMISSION_DENIED:
             type = 'PERMISSION_DENIED';
-            message = 'Location access was denied. Please allow location permissions in your browser address bar.';
+            message = isNative
+              ? 'Location access was denied. Please allow Location permission in Android App Settings.'
+              : 'Location access was denied. Please allow location permissions in your browser address bar.';
             break;
           case geoError.POSITION_UNAVAILABLE:
             type = 'POSITION_UNAVAILABLE';

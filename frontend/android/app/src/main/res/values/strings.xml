@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Disaster Safety</string>
+    <string name="title_activity_main">Disaster Safety</string>
+    <string name="package_name">com.disastersafety.app</string>
+    <string name="custom_url_scheme">com.disastersafety.app</string>
+</resources>

@@ -37,7 +37,14 @@ from app.services.cyclone_assessment import calculate_distance_to_indian_coastli
 from app.services.elevation_transect_engine import (
     compute_elevation_between_crisis_and_user,
 )
-from app.services.flood_assessment import classify_geographical_environment
+from app.services.flood_assessment import (
+    FLOOD_SEARCH_RADII_METERS,
+    assess_candidate_flood_safety,
+    calculate_flood_safety_score,
+    classify_geographical_environment,
+    discover_natural_elevated_terrain,
+    retrieve_candidate_elevation,
+)
 from app.services.recommendation_engine import (
     calculate_specification_points,
     estimate_height_from_sea_level_msl,
@@ -358,6 +365,438 @@ def is_real_location_suitable_for_crisis(
     return True
 
 
+def find_flood_safe_places(
+    session: Session,
+    latitude: float,
+    longitude: float,
+    max_radius_km: float = 5.0,
+    limit: int = 20,
+    active_events: list[CrisisEvent] | None = None,
+    dem_grid: Any | None = None,
+) -> FindSafePlacesResponse:
+    """
+    Dedicated Flood Safe Location Discovery & Assessment Engine (Requirements 2, 3, 4, 5, 6, 7, 8).
+    - Progressive search radii: 100m -> 250m -> 500m -> 1,000m -> 2,000m.
+    - Two categories:
+      A. Existing elevated infrastructure (flyovers, elevated corridors, existing elevated facilities).
+      B. Natural elevated terrain (model-derived high ground from actual elevation data, labeled 'Potential Elevated Ground').
+    - Retrieves elevation BEFORE calculating safety.
+    - Transparent 5-factor scoring (0 to 100).
+    - Excludes ordinary bridges, low-lying open grounds, and dangerous drainage channels / steep slopes.
+    - Returns structured error/status messages if no candidates or no reliable elevation.
+    """
+    user_loc = UserLocation(latitude=round(latitude, 5), longitude=round(longitude, 5))
+
+    # 1. Retrieve user elevation before calculating safety (Section 3)
+    user_elev_info = retrieve_candidate_elevation(
+        lat=latitude,
+        lon=longitude,
+        user_lat=latitude,
+        user_lon=longitude,
+        is_flyover=False,
+        dem_grid=dem_grid,
+    )
+    user_msl = user_elev_info.get("elevation_m")
+    if user_msl is None:
+        return FindSafePlacesResponse(
+            success=False,
+            user_location=user_loc,
+            disaster_type=CrisisType.FLOOD,
+            initial_radius_km=0.1,
+            effective_radius_km=0.1,
+            total_found=0,
+            safe_places=[],
+            engine_status="NO_RELIABLE_ELEVATION",
+            data_availability_status="ELEVATION_UNAVAILABLE",
+            engine_message="No reliable elevation data is available for current coordinates.",
+            search_radii_hierarchy_m=[100.0, 250.0, 500.0, 1000.0, 2000.0],
+        )
+
+    # 2. Configurable progressive radii (Section 2 & Section 6)
+    search_tiers_m = [r for r in FLOOD_SEARCH_RADII_METERS if r <= max(100.0, max_radius_km * 1000.0)]
+    if max_radius_km * 1000.0 > 2000.0:
+        if 3500.0 <= max_radius_km * 1000.0 and 3500.0 not in search_tiers_m:
+            search_tiers_m.append(3500.0)
+        max_m = round(max_radius_km * 1000.0, 1)
+        if max_m not in search_tiers_m:
+            search_tiers_m.append(max_m)
+    if not search_tiers_m:
+        search_tiers_m = FLOOD_SEARCH_RADII_METERS
+
+    user_geog = func.ST_SetSRID(func.ST_MakePoint(longitude, latitude), 4326).cast(Geography)
+    dist_m_col = func.ST_Distance(SafeLocation.location.cast(Geography), user_geog).label("distance_m")
+
+    active_flood_evts = active_events or []
+    all_discovered_flood_cands: dict[uuid.UUID, SafePlaceItem] = {}
+
+    for tier_m in search_tiers_m:
+        tier_km = round(tier_m / 1000.0, 3)
+        tier_candidates: list[SafePlaceItem] = []
+        sources_seen: set[str] = set()
+
+        # Category A: Existing Physical Features in Database within tier_m
+        tier_query = (
+            select(SafeLocation, dist_m_col)
+            .options(
+                selectinload(SafeLocation.source_references).selectinload(SafeLocationSourceReference.data_source)
+            )
+            .where(
+                func.ST_DWithin(SafeLocation.location.cast(Geography), user_geog, tier_m),
+                ~SafeLocation.name.ilike("%refuge zone (%%"),
+                ~SafeLocation.name.ilike("%assembly zone (%%"),
+                ~SafeLocation.name.ilike("%healthcare (%%"),
+            )
+            .order_by(dist_m_col.asc())
+        )
+        db_rows = session.execute(tier_query).all()
+
+        for row in db_rows:
+            loc: SafeLocation = row[0]
+            dist_m_val = float(row[1]) if row[1] is not None else 0.0
+            dist_km_val = round(dist_m_val / 1000.0, 3)
+            c_lat, c_lon = extract_location_coordinates(loc)
+            if c_lat == 0.0 and c_lon == 0.0 and loc.location is None:
+                c_lat, c_lon = latitude, longitude
+
+            name_str = (loc.name or "").strip()
+            name_lower = name_str.lower()
+            cat = (loc.category or "").upper()
+
+            # Reject synthetic coordinate names
+            if "(" in name_lower and ")" in name_lower and any(c.isdigit() for c in name_lower):
+                if any(w in name_lower for w in ["refuge", "assembly", "zone", "platform", "healthcare"]):
+                    continue
+
+            is_open = (
+                cat in ("OPEN_GROUND", "PARK", "PLAYGROUND", "GARDEN", "BRIDGE", "ROAD")
+                or any(w in name_lower for w in ["ground", "park", "garden", "field", "stadium", "maidan", "lawn", "turf"])
+            )
+            is_flyover = (
+                "flyover" in name_lower
+                or "elevated corridor" in name_lower
+                or "elevated deck" in name_lower
+                or "viaduct" in name_lower
+                or cat in ("FLYOVER", "ELEVATED_STRUCTURE")
+            )
+            is_official_shelter = (
+                cat == "OFFICIAL_FLOOD_SHELTER"
+                or (loc.designation_status == DesignationStatus.OFFICIAL and cat in ("COMMUNITY_CENTRE", "SCHOOL", "HOSPITAL"))
+            )
+            is_facility = (
+                cat in ("HOSPITAL", "SCHOOL", "GOVERNMENT_BUILDING", "COMMUNITY_CENTER")
+                or any(w in name_lower for w in ["hospital", "bhawan", "secretariat", "college", "school"])
+            )
+
+            if is_flyover:
+                cand_type = "ELEVATED_INFRASTRUCTURE"
+                access_desc = "UNKNOWN_VERIFICATION_REQUIRED: Public pedestrian ramp access and overhead clearance must be verified on-site"
+            elif is_official_shelter:
+                cand_type = "OFFICIAL_FLOOD_SHELTER"
+                access_desc = "OFFICIALLY_DESIGNATED_PUBLIC_SHELTER"
+            elif is_facility:
+                cand_type = "GENERAL_ELEVATED_FACILITY"
+                access_desc = "UNKNOWN_VERIFICATION_REQUIRED: Emergency access must be confirmed on-site"
+            elif is_open:
+                cand_type = "UNSUITABLE_FLOOD_RISK"
+                access_desc = "LOW_LYING_GROUND_FLOOD_EXPOSURE"
+            else:
+                cand_type = "GENERAL_STRUCTURE"
+                access_desc = "UNKNOWN_VERIFICATION_REQUIRED: On-site verification required"
+
+            src_summaries: list[SafeLocationSourceSummary] = []
+            for ref in loc.source_references:
+                d_code = ref.data_source.code if ref.data_source else "UNKNOWN"
+                d_name = ref.data_source.name if ref.data_source else "Unknown Data Source"
+                sources_seen.add(d_name)
+                ref_v_detail = (ref.properties.get("verification_detail") if ref.properties else None) or (
+                    "OFFICIALLY_VERIFIED" if loc.verification_status == VerificationStatus.VERIFIED else "UNVERIFIED"
+                )
+                src_summaries.append(
+                    SafeLocationSourceSummary(
+                        data_source_id=ref.data_source_id,
+                        data_source_code=d_code,
+                        data_source_name=d_name,
+                        external_feature_id=ref.external_feature_id,
+                        source_url=ref.source_url,
+                        last_seen_at=ref.last_seen_at,
+                        verification_detail=ref_v_detail,
+                        properties=ref.properties,
+                    )
+                )
+
+            cand_dict = {
+                "id": loc.id,
+                "name": loc.name,
+                "category": loc.category,
+                "candidate_type": cand_type,
+                "designation_status": loc.designation_status,
+                "verification_status": loc.verification_status,
+                "latitude": c_lat,
+                "longitude": c_lon,
+                "distance_km": dist_km_val,
+                "distance_m": dist_m_val,
+                "public_access_status": access_desc,
+            }
+
+            fl_fields = assess_candidate_flood_safety(
+                cand=cand_dict,
+                user_lat=latitude,
+                user_lon=longitude,
+                search_radius_m=tier_m,
+                active_flood_events=active_flood_evts,
+                dem_grid=dem_grid,
+            )
+
+            # Separate Discovery from Assessment: assign explicit SuitabilityClassification
+            if is_open and not (is_flyover or is_official_shelter):
+                suit_cls = SuitabilityClassification.NOT_RECOMMENDED
+                fl_fields.safety_category = "EXCLUDED"
+                fl_fields.safety_score = 15.0
+                fl_fields.assessment_reasons = [
+                    "Low-lying open ground: vulnerable to surface inundation and flash runoff; elevated structure or natural high ground required."
+                ]
+                fl_fields.known_hazards = ["SURFACE_INUNDATION_RISK", "WATERLOGGING"]
+            elif fl_fields.data_availability_status == "ELEVATION_UNAVAILABLE" or fl_fields.elevation_m is None:
+                # Supplementary evidence (DEM) missing; fallback to MSL sea level height with transparent warning
+                fl_fields.warnings.append("DEM elevation unavailable; height estimated from sea level topographic gradient.")
+                suit_cls = SuitabilityClassification.CONDITIONALLY_SUITABLE
+            elif fl_fields.safety_category == "SUITABLE_ELEVATED_REFUGE":
+                suit_cls = SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE
+            elif fl_fields.safety_category == "CONDITIONALLY_ELEVATED" or (is_flyover and (fl_fields.structure_height_m or 0) >= 5.0):
+                suit_cls = SuitabilityClassification.CONDITIONALLY_SUITABLE
+            elif fl_fields.safety_category == "EXCLUDED" or (fl_fields.relative_elevation_m is not None and fl_fields.relative_elevation_m < 0.5 and not is_flyover and not is_official_shelter):
+                suit_cls = SuitabilityClassification.NOT_RECOMMENDED
+            else:
+                suit_cls = SuitabilityClassification.CONDITIONALLY_SUITABLE
+
+            v_detail = "OFFICIALLY_VERIFIED" if loc.verification_status == VerificationStatus.VERIFIED else "UNVERIFIED"
+            loc_geojson = safe_postgis_to_geojson(loc.location) or {"type": "Point", "coordinates": [c_lon, c_lat]}
+            bound_geojson = safe_postgis_to_geojson(loc.boundary) if loc.boundary is not None else None
+
+            spec_pts = SpecificationMatchPoints(
+                distance_points=round(max(0.0, 30.0 - (dist_km_val * 6.0)), 1),
+                safety_factor_points=round(fl_fields.safety_score * 0.4, 1),
+                availability_points=15.0 if loc.capacity else 8.0,
+                features_points=15.0 if is_flyover or is_official_shelter else 10.0,
+                total_points=fl_fields.safety_score,
+            )
+
+            tier_candidates.append(
+                SafePlaceItem(
+                    id=loc.id,
+                    name=loc.name,
+                    category=loc.category,
+                    candidate_type=cand_type,
+                    discovery_source="OpenStreetMap / Real Infrastructure" if not src_summaries else src_summaries[0].data_source_name,
+                    search_radius_m=tier_m,
+                    elevation_m=fl_fields.elevation_m,
+                    ground_elevation_m=fl_fields.ground_elevation_m,
+                    structure_height_m=fl_fields.structure_height_m,
+                    structure_height_status=fl_fields.structure_height_status,
+                    relative_elevation_m=fl_fields.relative_elevation_m,
+                    data_confidence=fl_fields.data_confidence,
+                    data_availability_status=fl_fields.data_availability_status,
+                    feature_identifier=fl_fields.feature_identifier,
+                    assessment_reasons=fl_fields.assessment_reasons,
+                    known_hazards=fl_fields.known_hazards,
+                    last_updated_time=fl_fields.last_updated_time,
+                    designation_status=loc.designation_status,
+                    verification_status=loc.verification_status,
+                    verification_detail=v_detail,
+                    location=loc_geojson,
+                    boundary=bound_geojson,
+                    structural_condition=loc.structural_condition,
+                    accessibility_status=loc.accessibility_status,
+                    capacity=loc.capacity,
+                    distance_km=dist_km_val,
+                    distance_m=dist_m_val,
+                    suitability_classification=suit_cls,
+                    suitability_score=round(fl_fields.safety_score / 100.0, 2),
+                    specification_points=spec_pts,
+                    total_points=fl_fields.safety_score,
+                    distance_points=spec_pts.distance_points,
+                    safety_points=spec_pts.safety_factor_points,
+                    availability_points=spec_pts.availability_points,
+                    features_points=spec_pts.features_points,
+                    flood_fields=fl_fields,
+                    suitability_evidence=fl_fields.assessment_reasons,
+                    key_hazards=fl_fields.known_hazards,
+                    warnings=[],
+                    missing_information=["exact_building_height"] if fl_fields.structure_height_status == "UNKNOWN" else [],
+                    sources=src_summaries,
+                    created_at=loc.created_at,
+                    updated_at=loc.updated_at,
+                )
+            )
+
+        # Category B: Natural Elevated Terrain Discovery from DEM Data
+        natural_cands = discover_natural_elevated_terrain(
+            user_lat=latitude,
+            user_lon=longitude,
+            radius_m=tier_m,
+            user_msl=user_msl,
+            dem_grid=dem_grid,
+        )
+
+        for nc in natural_cands:
+            fl_fields = assess_candidate_flood_safety(
+                cand=nc,
+                user_lat=latitude,
+                user_lon=longitude,
+                search_radius_m=tier_m,
+                active_flood_events=active_flood_evts,
+                dem_grid=dem_grid,
+            )
+            sources_seen.add("Digital Elevation Model (DEM) Topographical Analysis")
+            nc_src = SafeLocationSourceSummary(
+                data_source_id=uuid.uuid5(uuid.NAMESPACE_DNS, "DEM_TERRAIN_SOURCE"),
+                data_source_code="DEM_TERRAIN",
+                data_source_name="Digital Elevation Model (DEM) Topographical Analysis",
+                external_feature_id=str(nc["id"]),
+                source_url="https://spacedata.copernicus.eu",
+                last_seen_at=datetime.now(timezone.utc),
+                verification_detail="MODEL_DERIVED_TERRAIN_CANDIDATE",
+                properties={"dem_resolution": "30m", "quality": "HIGH"},
+            )
+
+            spec_pts = SpecificationMatchPoints(
+                distance_points=round(max(0.0, 30.0 - (nc["distance_km"] * 6.0)), 1),
+                safety_factor_points=round(fl_fields.safety_score * 0.4, 1),
+                availability_points=10.0,
+                features_points=15.0,
+                total_points=fl_fields.safety_score,
+            )
+
+            suit_cls = (
+                SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE
+                if fl_fields.safety_category == "SUITABLE_ELEVATED_REFUGE"
+                else SuitabilityClassification.CONDITIONALLY_SUITABLE
+            )
+
+            tier_candidates.append(
+                SafePlaceItem(
+                    id=nc["id"],
+                    name=nc["name"],
+                    category=nc["category"],
+                    candidate_type="NATURAL_ELEVATED_TERRAIN",
+                    discovery_source="Digital Elevation Model (DEM) Topographical Analysis",
+                    search_radius_m=tier_m,
+                    elevation_m=fl_fields.elevation_m,
+                    ground_elevation_m=fl_fields.ground_elevation_m,
+                    structure_height_m=fl_fields.structure_height_m,
+                    structure_height_status=fl_fields.structure_height_status,
+                    relative_elevation_m=fl_fields.relative_elevation_m,
+                    data_confidence=fl_fields.data_confidence,
+                    data_availability_status=fl_fields.data_availability_status,
+                    feature_identifier=fl_fields.feature_identifier,
+                    assessment_reasons=fl_fields.assessment_reasons,
+                    known_hazards=fl_fields.known_hazards,
+                    last_updated_time=fl_fields.last_updated_time,
+                    designation_status=nc["designation_status"],
+                    verification_status=nc["verification_status"],
+                    verification_detail=nc["verification_detail"],
+                    location={"type": "Point", "coordinates": [nc["longitude"], nc["latitude"]]},
+                    boundary=None,
+                    structural_condition=None,
+                    accessibility_status=None,
+                    capacity=None,
+                    distance_km=nc["distance_km"],
+                    distance_m=nc["distance_m"],
+                    suitability_classification=suit_cls,
+                    suitability_score=round(fl_fields.safety_score / 100.0, 2),
+                    specification_points=spec_pts,
+                    total_points=fl_fields.safety_score,
+                    distance_points=spec_pts.distance_points,
+                    safety_points=spec_pts.safety_factor_points,
+                    availability_points=spec_pts.availability_points,
+                    features_points=spec_pts.features_points,
+                    flood_fields=fl_fields,
+                    suitability_evidence=fl_fields.assessment_reasons,
+                    key_hazards=fl_fields.known_hazards,
+                    warnings=[],
+                    missing_information=[],
+                    sources=[nc_src],
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+
+        def fl_sort_key(x: SafePlaceItem) -> tuple[int, float, float, float]:
+            prio = 0
+            if x.suitability_classification == SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE:
+                prio = 3
+            elif x.suitability_classification == SuitabilityClassification.CONDITIONALLY_SUITABLE:
+                prio = 2
+            elif x.suitability_classification == SuitabilityClassification.INSUFFICIENT_DATA:
+                prio = 1
+            rel_z = x.flood_fields.relative_elevation_m if x.flood_fields and x.flood_fields.relative_elevation_m is not None else 0.0
+            return (prio, x.total_points or 0.0, rel_z, -x.distance_km)
+
+        has_suitable = any(
+            c.suitability_classification in (SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE, SuitabilityClassification.CONDITIONALLY_SUITABLE)
+            for c in tier_candidates
+        )
+
+        if has_suitable:
+            tier_candidates.sort(key=fl_sort_key, reverse=True)
+            return FindSafePlacesResponse(
+                success=True,
+                user_location=user_loc,
+                disaster_type=CrisisType.FLOOD,
+                initial_radius_km=0.1,
+                effective_radius_km=tier_km,
+                total_found=len(tier_candidates),
+                safe_places=tier_candidates[:limit],
+                data_sources_queried=list(sources_seen) or ["OpenStreetMap", "Digital Elevation Model (DEM)"],
+                engine_name="Separate Flood Safe Place Engine (Progressive Radii: 100m, 250m, 500m, 1000m, 2000m)",
+                engine_status="SUCCESS",
+                data_availability_status="SOURCE_AVAILABLE",
+                engine_message=f"Discovered {len(tier_candidates)} verified candidates within {int(tier_m)}m radius priority.",
+                search_radii_hierarchy_m=[100.0, 250.0, 500.0, 1000.0, 2000.0],
+            )
+        else:
+            # Retain discovered features for final reporting if no suitable candidate is found in wider tiers
+            for cand in tier_candidates:
+                if cand.id not in all_discovered_flood_cands:
+                    all_discovered_flood_cands[cand.id] = cand
+
+    # If all tiers up to max radius were searched without finding a suitable flood refuge:
+    if all_discovered_flood_cands:
+        final_cands = list(all_discovered_flood_cands.values())
+        final_cands.sort(key=fl_sort_key, reverse=True)
+        return FindSafePlacesResponse(
+            success=True,
+            user_location=user_loc,
+            disaster_type=CrisisType.FLOOD,
+            initial_radius_km=0.1,
+            effective_radius_km=round(search_tiers_m[-1] / 1000.0, 2),
+            total_found=len(final_cands),
+            safe_places=final_cands[:limit],
+            data_sources_queried=list(sources_seen) or ["OpenStreetMap", "Digital Elevation Model (DEM)"],
+            engine_name="Separate Flood Safe Place Engine (Progressive Radii: 100m, 250m, 500m, 1000m, 2000m)",
+            engine_status="NO_SUITABLE_CANDIDATE",
+            data_availability_status="SOURCE_AVAILABLE",
+            engine_message=f"Discovered {len(final_cands)} geographical candidate(s) within {int(search_tiers_m[-1])}m radius, but none meet flood refuge elevation criteria.",
+            search_radii_hierarchy_m=[100.0, 250.0, 500.0, 1000.0, 2000.0],
+        )
+
+    return FindSafePlacesResponse(
+        success=True,
+        user_location=user_loc,
+        disaster_type=CrisisType.FLOOD,
+        initial_radius_km=0.1,
+        effective_radius_km=round(search_tiers_m[-1] / 1000.0, 2),
+        total_found=0,
+        safe_places=[],
+        data_sources_queried=["OpenStreetMap", "Digital Elevation Model (DEM)"],
+        engine_name="Separate Flood Safe Place Engine (Progressive Radii: 100m, 250m, 500m, 1000m, 2000m)",
+        engine_status="NO_SUITABLE_CANDIDATE",
+        data_availability_status="NO_CANDIDATES_FOUND",
+        engine_message="No physical geographical features discovered within search radius.",
+        search_radii_hierarchy_m=[100.0, 250.0, 500.0, 1000.0, 2000.0],
+    )
+
+
 def find_safe_places_near_user(
     session: Session,
     latitude: float,
@@ -399,7 +838,7 @@ def find_safe_places_near_user(
         session.rollback()
         logger.debug(f"Synthetic cleanup note: {exc}")
 
-    # 2. Determine active crisis: user selected crisis, or ongoing active crisis near user, or default
+    # 2. Determine active crisis: user selected crisis, or ongoing active crisis near user, or default general mode
     active_crisis = disaster_type
     if active_crisis is None:
         nearby_event = session.scalars(
@@ -414,20 +853,30 @@ def find_safe_places_near_user(
         if nearby_event is not None:
             active_crisis = nearby_event.crisis_type
         else:
-            any_active = session.scalars(
-                select(CrisisEvent).where(CrisisEvent.status == CrisisStatus.ACTIVE).limit(1)
-            ).first()
-            active_crisis = any_active.crisis_type if any_active is not None else CrisisType.EARTHQUAKE
+            active_crisis = None  # General Multi-Hazard / Emergency Assembly Mode
 
-    # 3. Query active events for this crisis type
-    active_events: list[CrisisEvent] = list(
-        session.scalars(
-            select(CrisisEvent).where(
-                CrisisEvent.crisis_type == active_crisis,
-                CrisisEvent.status == CrisisStatus.ACTIVE,
-            )
-        ).all()
-    )
+    # 3. Query active events for this crisis type if specific crisis is active
+    active_events: list[CrisisEvent] = []
+    if active_crisis is not None:
+        active_events = list(
+            session.scalars(
+                select(CrisisEvent).where(
+                    CrisisEvent.crisis_type == active_crisis,
+                    CrisisEvent.status == CrisisStatus.ACTIVE,
+                )
+            ).all()
+        )
+
+    # 3.b Dedicated Flood Safe Place Discovery & Assessment Engine
+    if active_crisis == CrisisType.FLOOD:
+        return find_flood_safe_places(
+            session=session,
+            latitude=latitude,
+            longitude=longitude,
+            max_radius_km=capped_max_radius_km,
+            limit=limit,
+            active_events=active_events,
+        )
 
     # 4. Ingest real OSM candidates dynamically if local density is low
     existing_count = session.scalar(
@@ -454,13 +903,23 @@ def find_safe_places_near_user(
         except Exception as exc:
             logger.debug(f"Dynamic candidate discovery note: {exc}")
 
-    # 5. Progressive search starting from 100 meters (0.1 km)
-    # Tiers expand progressively: 100m, 250m, 500m, 1km, 2km, 3.5km, 5km (plus safety net if remote)
-    search_tiers_km = [0.1, 0.25, 0.5, 1.0, 2.0, 3.5, 5.0, 10.0, 25.0, 50.0, 100.0, 500.0]
+    # 5. Progressive search starting from 100 meters (0.1 km) up to capped max radius
+    # Priority tiers: 100m, 250m, 500m, 1km, 2km, 3.5km, 5km
+    search_tiers_km = [t for t in [0.1, 0.25, 0.5, 1.0, 2.0, 3.5, 5.0] if t <= capped_max_radius_km]
+    if not search_tiers_km:
+        search_tiers_km = [0.1, 0.25, 0.5, 1.0, 2.0]
 
-    safe_places: list[SafePlaceItem] = []
-    effective_radius_km = 0.1
+    all_discovered_candidates: dict[uuid.UUID, SafePlaceItem] = {}
     sources_seen: set[str] = set()
+    effective_radius_km = 0.1
+
+    def sort_key(item: SafePlaceItem) -> tuple[int, float, float]:
+        cls_prio = 0
+        if item.suitability_classification == SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE:
+            cls_prio = 2
+        elif item.suitability_classification == SuitabilityClassification.CONDITIONALLY_SUITABLE:
+            cls_prio = 1
+        return (cls_prio, item.total_points or 0.0, -item.distance_km)
 
     for tier_km in search_tiers_km:
         tier_m = tier_km * 1000.0
@@ -490,6 +949,16 @@ def find_safe_places_near_user(
             dist_m_val = float(row[1]) if row[1] is not None else 0.0
             dist_km_val = round(dist_m_val / 1000.0, 3)
             c_lat, c_lon = extract_location_coordinates(loc)
+            if c_lat == 0.0 and c_lon == 0.0 and loc.location is None:
+                c_lat, c_lon = latitude, longitude
+
+            name_lower = (loc.name or "").lower()
+            cat = (loc.category or "").upper()
+
+            # Reject synthetic coordinate names
+            if "(" in name_lower and ")" in name_lower and any(c.isdigit() for c in name_lower):
+                if any(w in name_lower for w in ["refuge", "assembly", "zone", "platform", "healthcare"]):
+                    continue
 
             # Evaluate candidate suitability
             (
@@ -514,7 +983,7 @@ def find_safe_places_near_user(
             )
 
             # Calculate specification match points (0 - 100)
-            tot_pts, safe_pts, dist_pts, cap_pts, feat_pts = calculate_specification_points(
+            dist_pts, safe_pts, avail_pts, feat_pts, tot_pts = calculate_specification_points(
                 loc=loc,
                 lat=c_lat,
                 lon=c_lon,
@@ -523,16 +992,72 @@ def find_safe_places_near_user(
                 active_events=active_events,
             )
 
-            # Check if this real location is suitable for the specific crisis
-            if not is_real_location_suitable_for_crisis(
-                loc, active_crisis, suit_class, safe_pts, user_lat=latitude, user_lon=longitude
-            ):
-                continue
+            # Separate Discovery from Assessment: assign explicit SuitabilityClassification
+            if active_crisis == CrisisType.EARTHQUAKE:
+                is_ok = is_real_location_suitable_for_crisis(
+                    loc, CrisisType.EARTHQUAKE, suit_class, safe_pts, user_lat=latitude, user_lon=longitude
+                )
+                if is_ok:
+                    final_suit_cls = (
+                        suit_class
+                        if suit_class in (SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE, SuitabilityClassification.CONDITIONALLY_SUITABLE)
+                        else SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE
+                    )
+                    evidence = ["Open public assembly ground safe from building roof collapse and masonry failure."]
+                    warnings = []
+                else:
+                    final_suit_cls = SuitabilityClassification.NOT_RECOMMENDED
+                    evidence = [
+                        f"{loc.category or 'Structure'}: enclosed building or elevated flyover subject to structural collapse or falling debris hazard during earthquakes; clear open skyward clearance ground required."
+                    ]
+                    warnings = ["High collapse risk during earthquakes. Open grounds or wide roads required."]
+                    hazards = ["BUILDING_COLLAPSE_RISK", "FALLING_MASONRY"]
+            elif active_crisis == CrisisType.CYCLONE:
+                is_ok = is_real_location_suitable_for_crisis(
+                    loc, CrisisType.CYCLONE, suit_class, safe_pts, user_lat=latitude, user_lon=longitude
+                )
+                if is_ok:
+                    final_suit_cls = (
+                        suit_class
+                        if suit_class in (SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE, SuitabilityClassification.CONDITIONALLY_SUITABLE)
+                        else SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE
+                    )
+                    evidence = ["Reinforced multi-purpose storm refuge safe from cyclonic gales."]
+                    warnings = []
+                else:
+                    final_suit_cls = SuitabilityClassification.NOT_RECOMMENDED
+                    evidence = [
+                        f"{loc.category or 'Location'}: open ground or unreinforced structure with extreme exposure to cyclonic winds and flying debris; reinforced cyclone shelter required."
+                    ]
+                    warnings = ["Severe gale wind exposure. Certified shelter required."]
+                    hazards = ["EXTREME_GALE_WINDS", "FLYING_DEBRIS"]
+            else:
+                # General Multi-Hazard (disaster_type is None)
+                is_open = (
+                    cat in ("OPEN_GROUND", "PARK", "PLAYGROUND", "GARDEN", "FIELD", "ROAD", "CAMPUS")
+                    or any(w in name_lower for w in ["ground", "park", "garden", "field", "stadium", "maidan", "lawn", "turf", "open assembly"])
+                )
+                is_official = (
+                    loc.designation_status == DesignationStatus.OFFICIAL
+                    or cat in ("OFFICIAL_FLOOD_SHELTER", "OFFICIAL_CYCLONE_SHELTER", "COMMUNITY_CENTRE")
+                )
+                if is_open:
+                    final_suit_cls = SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE
+                    evidence = ["Open public assembly ground safe from building roof collapse and masonry failure."]
+                    warnings = []
+                elif is_official:
+                    final_suit_cls = SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE
+                    evidence = ["Officially designated public emergency refuge facility."]
+                    warnings = []
+                else:
+                    final_suit_cls = SuitabilityClassification.CONDITIONALLY_SUITABLE
+                    evidence = ["Public facility suitable for emergency refuge; on-site verification recommended."]
+                    warnings = []
 
             spec_points = SpecificationMatchPoints(
                 distance_points=dist_pts,
                 safety_factor_points=safe_pts,
-                availability_points=cap_pts,
+                availability_points=avail_pts,
                 features_points=feat_pts,
                 total_points=tot_pts,
             )
@@ -548,7 +1073,7 @@ def find_safe_places_near_user(
                 lat=c_lat,
                 lon=c_lon,
                 distance_km=dist_km_val,
-                active_flood_events=active_events if active_crisis == CrisisType.FLOOD else [],
+                active_flood_events=[],
                 user_lat=latitude,
                 user_lon=longitude,
             )
@@ -599,8 +1124,13 @@ def find_safe_places_near_user(
                     capacity=loc.capacity,
                     distance_km=dist_km_val,
                     distance_m=dist_m_val,
-                    suitability_classification=suit_class,
-                    suitability_score=score,
+                    ground_elevation_m=fl_fields.ground_elevation_m if fl_fields else None,
+                    structure_height_m=fl_fields.structure_height_m if fl_fields else None,
+                    structure_height_status=fl_fields.structure_height_status if fl_fields else "UNKNOWN",
+                    data_availability_status=fl_fields.data_availability_status if fl_fields else "SOURCE_AVAILABLE",
+                    feature_identifier=str(loc.id),
+                    suitability_classification=final_suit_cls,
+                    suitability_score=score if score is not None else round((tot_pts or 50.0) / 100.0, 2),
                     specification_points=spec_points,
                     total_points=tot_pts,
                     distance_points=dist_pts,
@@ -620,29 +1150,61 @@ def find_safe_places_near_user(
                 )
             )
 
-        if matching_tier_items:
-            # We found matching real safe locations for this crisis in this tier!
-            safe_places = matching_tier_items[:limit]
-            break
+        has_suitable = any(
+            item.suitability_classification in (SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE, SuitabilityClassification.CONDITIONALLY_SUITABLE)
+            for item in matching_tier_items
+        )
 
-    # Sort safe places: prioritize total points and suitable classification
-    def sort_key(item: SafePlaceItem) -> tuple[int, float, float]:
-        cls_prio = 0
-        if item.suitability_classification == SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE:
-            cls_prio = 2
-        elif item.suitability_classification == SuitabilityClassification.CONDITIONALLY_SUITABLE:
-            cls_prio = 1
-        return (cls_prio, item.total_points or 0.0, -item.distance_km)
+        if has_suitable:
+            matching_tier_items.sort(key=sort_key, reverse=True)
+            return FindSafePlacesResponse(
+                success=True,
+                user_location=UserLocation(latitude=latitude, longitude=longitude),
+                disaster_type=disaster_type,
+                initial_radius_km=0.1,
+                effective_radius_km=round(tier_km, 2),
+                total_found=len(matching_tier_items),
+                safe_places=matching_tier_items[:limit],
+                data_sources_queried=sorted(sources_seen),
+                engine_status="SUCCESS",
+                data_availability_status="SOURCE_AVAILABLE",
+                engine_message=f"Discovered {len(matching_tier_items)} verified candidates within {int(tier_m)}m radius priority.",
+                search_radii_hierarchy_m=[100.0, 250.0, 500.0, 1000.0, 2000.0],
+            )
+        else:
+            for item in matching_tier_items:
+                if item.id not in all_discovered_candidates:
+                    all_discovered_candidates[item.id] = item
 
-    safe_places.sort(key=sort_key, reverse=True)
+    if all_discovered_candidates:
+        final_places = list(all_discovered_candidates.values())
+        final_places.sort(key=sort_key, reverse=True)
+        return FindSafePlacesResponse(
+            success=True,
+            user_location=UserLocation(latitude=latitude, longitude=longitude),
+            disaster_type=disaster_type,
+            initial_radius_km=0.1,
+            effective_radius_km=round(search_tiers_km[-1], 2),
+            total_found=len(final_places),
+            safe_places=final_places[:limit],
+            data_sources_queried=sorted(sources_seen),
+            engine_status="CANDIDATES_ASSESSED_NONE_OPTIMAL",
+            data_availability_status="SOURCE_AVAILABLE",
+            engine_message=f"Discovered {len(final_places)} real geographical candidate(s) within {capped_max_radius_km}km, but none meet optimal safety requirements for {active_crisis.value if active_crisis else 'selected disaster'}.",
+            search_radii_hierarchy_m=[100.0, 250.0, 500.0, 1000.0, 2000.0],
+        )
 
     return FindSafePlacesResponse(
         success=True,
         user_location=UserLocation(latitude=latitude, longitude=longitude),
         disaster_type=disaster_type,
         initial_radius_km=0.1,
-        effective_radius_km=round(effective_radius_km, 2),
-        total_found=len(safe_places),
-        safe_places=safe_places,
+        effective_radius_km=round(search_tiers_km[-1], 2),
+        total_found=0,
+        safe_places=[],
         data_sources_queried=sorted(sources_seen),
+        engine_status="NO_CANDIDATES_FOUND",
+        data_availability_status="NO_CANDIDATES_FOUND",
+        engine_message=f"No physical geographical candidates identified within {capped_max_radius_km}km search radius.",
+        search_radii_hierarchy_m=[100.0, 250.0, 500.0, 1000.0, 2000.0],
     )

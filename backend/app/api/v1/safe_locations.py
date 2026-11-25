@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database.session import get_db
 from app.models.enums import CrisisType, VerificationStatus
 from app.schemas.disaster_search import UserLocation
+from app.schemas.flood_safe import (
+    CrisisLocation,
+    FloodSafeLocationsResponse,
+    Point,
+    SafeLocationRequest,
+)
 from app.schemas.safe_location import (
     NearbySafeLocationsResponse,
     SafeLocationDetailResponse,
@@ -39,10 +46,85 @@ from app.services.safe_location import (
 )
 from app.services.safe_location_ingestion import sync_all_safe_location_sources
 from app.services.safe_place_engine import find_safe_places_near_user
+from app.services.flood_safe_service import (
+    find_safe_locations,
+    get_default_providers,
+    in_india_bbox,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/safe-locations", tags=["safe-locations"])
+
+
+def check_safe_location_key(x_api_key: str | None = Header(default=None)) -> None:
+    api_key = getattr(settings, "safe_location_api_key", None)
+    if api_key and x_api_key != api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing X-API-Key",
+        )
+
+
+async def validate_india(req: SafeLocationRequest, prov: Any) -> None:
+    for label, p in (("user_location", req.user_location), ("crisis_location", req.crisis_location)):
+        if not in_india_bbox(p.lat, p.lon):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{label} is outside India. This service covers India only.",
+            )
+        if getattr(settings, "verify_country", False):
+            is_in = await prov.verify_country(p.lat, p.lon)
+            if is_in is False:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{label} is not inside India (country check failed).",
+                )
+
+
+@router.post(
+    "",
+    response_model=FloodSafeLocationsResponse,
+    dependencies=[Depends(check_safe_location_key)],
+    summary="Find safe locations during flood crisis (India)",
+    description=(
+        "Evaluates authentic shelters, public buildings, open high ground, and flyovers (last resort) "
+        "near the user and outside the flood danger zone with elevation-grid analysis and OSRM route verification."
+    ),
+)
+async def safe_locations_post(
+    req: SafeLocationRequest,
+) -> FloodSafeLocationsResponse:
+    prov = get_default_providers()
+    await validate_india(req, prov)
+    result = await find_safe_locations(req, prov)
+    return FloodSafeLocationsResponse.model_validate(result)
+
+
+@router.get(
+    "",
+    response_model=FloodSafeLocationsResponse,
+    dependencies=[Depends(check_safe_location_key)],
+    summary="Find safe locations during flood crisis (India) via query parameters",
+    description="Query parameter variant of the flood safe location discovery engine.",
+)
+async def safe_locations_get(
+    user_lat: float = Query(ge=-90.0, le=90.0, description="User latitude"),
+    user_lon: float = Query(ge=-180.0, le=180.0, description="User longitude"),
+    crisis_lat: float = Query(ge=-90.0, le=90.0, description="Flood crisis latitude"),
+    crisis_lon: float = Query(ge=-180.0, le=180.0, description="Flood crisis longitude"),
+    crisis_radius_km: float = Query(2.0, gt=0.0, le=50.0, description="Estimated danger-zone radius in km"),
+    search_radius_km: float = Query(5.0, ge=1.0, le=15.0, description="Search radius around user in km"),
+) -> FloodSafeLocationsResponse:
+    req = SafeLocationRequest(
+        user_location=Point(lat=user_lat, lon=user_lon),
+        crisis_location=CrisisLocation(lat=crisis_lat, lon=crisis_lon, radius_km=crisis_radius_km),
+        search_radius_km=search_radius_km,
+    )
+    prov = get_default_providers()
+    await validate_india(req, prov)
+    result = await find_safe_locations(req, prov)
+    return FloodSafeLocationsResponse.model_validate(result)
 
 
 @router.get(

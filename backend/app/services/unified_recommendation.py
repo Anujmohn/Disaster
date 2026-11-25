@@ -22,7 +22,7 @@ from app.schemas.disaster_search import (
     DisasterSourceSummary,
     UserLocation,
 )
-from app.schemas.recommendation import SuitabilityClassification
+from app.schemas.recommendation import StageDiagnostics, SuitabilityClassification
 from app.schemas.route import RouteClassification
 from app.schemas.unified_recommendation import (
     DisasterHazardAssessmentSummary,
@@ -608,11 +608,21 @@ def generate_unified_recommendations(
     ]
 
     if total_candidates_found == 0:
-        overall_status = UnifiedRecommendationStatus.INSUFFICIENT_DATA
+        overall_status = UnifiedRecommendationStatus.NO_CANDIDATES_FOUND
+        overall_uncertainties.append(
+            "No authentic geographical safe locations or facilities discovered within the expanded search radius. Progressive search scanned from 100m upwards."
+        )
     elif total_suitable == 0:
         overall_status = UnifiedRecommendationStatus.NO_SUITABLE_DESTINATION_FOUND
+        overall_uncertainties.append(
+            f"Evaluated {total_candidates_found} candidate location(s), but none satisfied the safety criteria for {disaster_type.value}."
+        )
     elif not usable_destinations:
         overall_status = UnifiedRecommendationStatus.NO_ROUTE_AVAILABLE
+        if any(d.route_status == RouteClassification.ROUTING_SERVICE_UNAVAILABLE for d in candidate_destinations):
+            overall_uncertainties.append(
+                "Routing service (OSRM) unavailable. Recommendations are based on physical suitability and straight-line distance; verify road passability on-ground."
+            )
     elif any(
         d.suitability_classification == SuitabilityClassification.SUITABILITY_SUPPORTED_BY_EVIDENCE
         and d.route_status == RouteClassification.ROUTE_AVAILABLE
@@ -636,6 +646,7 @@ def generate_unified_recommendations(
         total_routed_destinations=total_routed,
         recommendations=candidate_destinations,
         excluded_destinations_count=excluded_count,
+        diagnostics=suitability_resp.diagnostics if isinstance(getattr(suitability_resp, "diagnostics", None), StageDiagnostics) else None,
         methodology_and_ranking_notes=METHODOLOGY_NOTES,
         overall_uncertainties=list(set(overall_uncertainties)),
         safety_disclaimer=UNIFIED_SAFETY_DISCLAIMER,

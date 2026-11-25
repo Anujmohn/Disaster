@@ -61,11 +61,16 @@ class FloodSafetyFields(SchemaModel):
 
     # Flood-specific discovery and assessment fields (Requirements 2, 3, 4, 5, 6, 8)
     candidate_type: str = "ELEVATED_INFRASTRUCTURE"  # ELEVATED_INFRASTRUCTURE, NATURAL_ELEVATED_TERRAIN, OFFICIAL_FLOOD_SHELTER, GENERAL_ELEVATED_FACILITY, UNSUITABLE_FLOOD_RISK
-    elevation_status: str = "VERIFIED_DEM"  # VERIFIED_DEM, CITY_MSL_BENCHMARK, UNKNOWN
+    elevation_status: str = "VERIFIED_DEM"  # VERIFIED_DEM, REGIONAL_BENCHMARK_INTERPOLATED, ELEVATION_UNAVAILABLE, UNKNOWN
     elevation_source: str | None = "Copernicus DEM GLO-30 / Survey of India Benchmark"
     elevation_resolution_m: float | None = 30.0
     elevation_retrieval_time: str | None = None
     elevation_quality: str = "HIGH"  # HIGH, INTERPOLATED, UNKNOWN
+    ground_elevation_m: float | None = None
+    structure_height_m: float | None = None
+    structure_height_status: str = "UNKNOWN"  # VERIFIED_3D_FOOTPRINT, ESTIMATED_INFRASTRUCTURE_DECK, ESTIMATED_FROM_STOREY_COUNT, UNKNOWN
+    data_availability_status: str = "SOURCE_AVAILABLE"  # SOURCE_AVAILABLE, SOURCE_UNAVAILABLE, PARTIAL_DATA_AVAILABLE, ELEVATION_UNAVAILABLE, BUILDING_DATA_UNAVAILABLE, INSUFFICIENT_GEOGRAPHICAL_DATA, NO_CANDIDATES_FOUND, NO_SUITABLE_CANDIDATE_FOUND
+    feature_identifier: str | None = None
     relative_elevation_m: float | None = None
     local_terrain_slope_deg: float | None = None
     terrain_feature_type: str = "RIDGE_OR_HIGH_GROUND"  # RIDGE_OR_HIGH_GROUND, TERRACE, FLAT_PLAIN, VALLEY_BOTTOM, DRAINAGE_CHANNEL
@@ -113,20 +118,25 @@ class SafePlaceItem(SchemaModel):
     distance_km: float
     distance_m: float
 
-    # Flood & Candidate Metadata (Requirements 2, 3, 5, 8)
+    # Flood & Candidate Metadata (Requirements 2, 3, 4, 5, 7, 8)
     candidate_type: str = "ELEVATED_INFRASTRUCTURE"  # ELEVATED_INFRASTRUCTURE, NATURAL_ELEVATED_TERRAIN, OFFICIAL_FLOOD_SHELTER, GENERAL_ELEVATED_FACILITY, UNSUITABLE_FLOOD_RISK
     discovery_source: str = "OpenStreetMap / Real Infrastructure"
     search_radius_m: float = 100.0
     elevation_m: float | None = None
+    ground_elevation_m: float | None = None
+    structure_height_m: float | None = None
+    structure_height_status: str = "UNKNOWN"
     relative_elevation_m: float | None = None
     data_confidence: str = "HIGH"
+    data_availability_status: str = "SOURCE_AVAILABLE"
+    feature_identifier: str | None = None
     assessment_reasons: list[str] = Field(default_factory=list)
     known_hazards: list[str] = Field(default_factory=list)
     last_updated_time: str | None = None
 
     # Suitability
     suitability_classification: SuitabilityClassification
-    suitability_score: float
+    suitability_score: float = 0.5
 
     # Specification Match Points (0 - 100)
     specification_points: SpecificationMatchPoints | None = None
@@ -180,6 +190,7 @@ class FindSafePlacesResponse(SchemaModel):
     engine_name: str = "Separate Safe Place Discovery Engine (0.1 to 5.0 km Progressive Expansion)"
     engine_status: str = "SUCCESS"  # SUCCESS, NO_CANDIDATES_FOUND, NO_RELIABLE_ELEVATION, FLOOD_ASSESSMENT_INCOMPLETE, ONLY_UNVERIFIED_CANDIDATES, NO_SUITABLE_CANDIDATE
     engine_message: str = "Candidate safe places evaluated successfully."
+    data_availability_status: str = "SOURCE_AVAILABLE"  # SOURCE_AVAILABLE, SOURCE_UNAVAILABLE, PARTIAL_DATA_AVAILABLE, ELEVATION_UNAVAILABLE, BUILDING_DATA_UNAVAILABLE, INSUFFICIENT_GEOGRAPHICAL_DATA, NO_CANDIDATES_FOUND, NO_SUITABLE_CANDIDATE_FOUND
     search_radii_hierarchy_m: list[float] = Field(default_factory=lambda: [100.0, 250.0, 500.0, 1000.0, 2000.0])
     disaster_safety_disclaimer: str = (
         "Automated safe place recommendations are advisory models for emergency planning. "

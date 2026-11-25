@@ -30,6 +30,11 @@ from app.services.source_registry import sync_data_sources
 logger = logging.getLogger(__name__)
 
 OVERPASS_API_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_MIRROR_URLS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+]
 
 # Representative OSM candidate features across India (community centres, open grounds, parks, gardens, fields, flyovers, schools, hospitals)
 REPRESENTATIVE_OSM_CANDIDATES: list[dict[str, Any]] = [
@@ -614,33 +619,49 @@ def fetch_overpass_features(
     west: float,
     north: float,
     east: float,
-    timeout_seconds: float = 10.0,
-    api_url: str = OVERPASS_API_URL,
+    timeout_seconds: float = 6.0,
+    api_url: str | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Queries OpenStreetMap Overpass API for public amenities and open areas within bounding box.
+    Queries OpenStreetMap Overpass API for real mapped public amenities, parks, grounds, and elevated infrastructure.
+    Queries both nodes and ways (with centroid coordinates) across active mirror endpoints.
     """
     query = (
-        f"[out:json][timeout:15];("
+        f"[out:json][timeout:10];("
         f'node["amenity"~"community_centre|school|hospital|shelter|townhall|public_building"]({south},{west},{north},{east});'
+        f'way["amenity"~"community_centre|school|hospital|shelter|townhall|public_building"]({south},{west},{north},{east});'
         f'node["leisure"~"park|pitch|playground|common|garden"]({south},{west},{north},{east});'
-        f'node["bridge"~"yes|viaduct|flyover"]({south},{west},{north},{east});'
-        f'node["highway"~"primary|secondary"]({south},{west},{north},{east});'
+        f'way["leisure"~"park|pitch|playground|common|garden"]({south},{west},{north},{east});'
+        f'way["bridge"~"viaduct|flyover"]({south},{west},{north},{east});'
+        f'way["highway"~"primary|secondary"]({south},{west},{north},{east});'
+        f'node["natural"~"peak|ridge|hill"]({south},{west},{north},{east});'
         f");out center 50 tags;"
     )
 
     data = urllib.parse.urlencode({"data": query}).encode("utf-8")
-    req = urllib.request.Request(
-        api_url,
-        data=data,
-        headers={"User-Agent": "DisasterSafetyApp/1.0 (+https://github.com/disaster-safety-app)"},
-    )
-
+    endpoints = [api_url] if api_url else OVERPASS_MIRROR_URLS[:2]
     ctx = ssl.create_default_context()
-    with urllib.request.urlopen(req, context=ctx, timeout=timeout_seconds) as resp:
-        body = resp.read().decode("utf-8")
-        payload = json.loads(body)
-        return payload.get("elements", [])
+    effective_timeout = min(timeout_seconds, 2.0)
+    last_err: Exception | None = None
+
+    for ep in endpoints:
+        try:
+            req = urllib.request.Request(
+                ep,
+                data=data,
+                headers={"User-Agent": "DisasterSafetyApp/2.0 (+https://github.com/disaster-safety-app)"},
+            )
+            with urllib.request.urlopen(req, context=ctx, timeout=effective_timeout) as resp:
+                body = resp.read().decode("utf-8")
+                payload = json.loads(body)
+                return payload.get("elements", [])
+        except Exception as exc:
+            last_err = exc
+            continue
+
+    if last_err is not None:
+        raise last_err
+    return []
 
 
 def sync_osm_locations(
@@ -841,16 +862,14 @@ def discover_and_sync_candidate_locations(
     disaster_type: Any | None = None,
 ) -> int:
     """
-    Discovers and synchronizes fresh candidate safe locations near requested coordinates,
-    ensuring that the system never relies solely on pre-saved database locations.
+    Discovers and synchronizes authentic candidate safe locations near requested coordinates,
+    ensuring that the system queries live geographical features.
 
     1. Defines a spatial bounding box around (latitude, longitude).
-    2. Queries live Overpass API for public amenities, open grounds, gardens, roads, flyovers,
+    2. Queries live Overpass API for real public amenities, open grounds, gardens, roads, flyovers,
        and cyclone shelters.
     3. If Overpass is unavailable (network, timeout, sandbox) or returns 0 features,
-       synthesizes geographically valid candidate features with real-world specifications
-       (open gardens/roads for earthquake, elevated flyovers/government places for flood,
-       and stilt cyclone shelters for cyclone) starting at 80m - 500m.
+       strictly relies on existing verified database facilities; NEVER generates synthetic or fake coordinates.
     4. Ingests candidate locations into the database idempotently.
     """
     from app.services.cyclone_assessment import calculate_distance_to_indian_coastline_km
@@ -885,6 +904,13 @@ def discover_and_sync_candidate_locations(
         el for el in elements
         if el.get("tags", {}).get("name") and len(el.get("tags", {}).get("name", "").strip()) >= 3
     ]
+
+    if not real_elements:
+        # Check representative verified OSM candidate catalog for this bounding box if live Overpass is offline/timed out
+        real_elements = [
+            c for c in REPRESENTATIVE_OSM_CANDIDATES
+            if south <= c.get("lat", 0.0) <= north and west <= c.get("lon", 0.0) <= east
+        ]
 
     if not real_elements:
         # Strictly do not synthesize fake or hypothetical locations.
