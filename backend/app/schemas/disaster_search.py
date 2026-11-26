@@ -63,6 +63,9 @@ class NearbyDisastersResponse(SchemaModel):
     search_radius_km: float
     total_events: int
     events: list[DisasterEventSummary] = Field(default_factory=list)
+    sync_status: str | None = None
+    last_synced_at: datetime | None = None
+    provider_statuses: dict[str, Any] | None = None
 
 
 __all__ = [

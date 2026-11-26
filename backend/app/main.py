@@ -31,6 +31,10 @@ from app.services.alert_service import (
     start_background_alert_monitor,
     stop_background_alert_monitor,
 )
+from app.services.disaster_realtime_sync import (
+    start_disaster_background_sync,
+    stop_disaster_background_sync,
+)
 
 # Initialize production-ready structured logging
 configure_logging(settings.log_level)
@@ -42,10 +46,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Initializing %s in [%s] mode...", settings.app_name, settings.environment)
     if settings.alert_monitoring_enabled:
         start_background_alert_monitor(settings.alert_monitoring_interval_seconds)
+    if settings.disaster_auto_sync_enabled:
+        start_disaster_background_sync()
     try:
         yield
     finally:
         logger.info("Gracefully shutting down %s...", settings.app_name)
+        stop_disaster_background_sync()
         stop_background_alert_monitor()
         try:
             from app.database.session import engine

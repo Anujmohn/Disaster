@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     overpass_cache_ttl: int = 600
     alert_monitoring_enabled: bool = False
     alert_monitoring_interval_seconds: int = 300
+    disaster_auto_sync_enabled: bool = True
+    earthquake_sync_interval_seconds: int = 90
+    sachet_sync_interval_seconds: int = 180
+    imd_sync_interval_seconds: int = 300
     cors_allowed_origins: str = "*"
     rate_limit_enabled: bool = True
     rate_limit_per_minute: int = 120

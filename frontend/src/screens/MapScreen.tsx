@@ -568,6 +568,13 @@ export default function MapScreen(): React.JSX.Element {
   }, [loadDisasters, loadSafePlaces, loadAlerts, loadComputerVisionFeatures]);
 
   useEffect(() => {
+    const interval = setInterval(() => {
+      loadDisasters();
+    }, 120_000);
+    return () => clearInterval(interval);
+  }, [loadDisasters]);
+
+  useEffect(() => {
     cvMarkersRef.current.forEach((m) => m.remove());
     cvMarkersRef.current = [];
 

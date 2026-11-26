@@ -9,6 +9,10 @@ from sqlalchemy.orm import Session
 from app.database.session import get_db
 from app.models.enums import CrisisStatus, CrisisType
 from app.schemas.disaster_search import NearbyDisastersResponse
+from app.services.disaster_realtime_sync import (
+    ensure_fresh_disasters,
+    get_sync_status_snapshot,
+)
 from app.services.disaster_search import get_all_active_disasters, get_nearby_disasters
 
 logger = logging.getLogger(__name__)
@@ -136,7 +140,13 @@ def get_nearby_disaster_events(
     type_filters = parse_disaster_types(disaster_types)
     status_filters = parse_crisis_statuses(status)
 
-    return get_nearby_disasters(
+    try:
+        sync_meta = ensure_fresh_disasters(session=db, disaster_types=type_filters)
+    except Exception as exc:
+        logger.warning("On-demand disaster sync note: %s", exc)
+        sync_meta = get_sync_status_snapshot()
+
+    resp = get_nearby_disasters(
         session=db,
         latitude=latitude,
         longitude=longitude,
@@ -145,6 +155,10 @@ def get_nearby_disaster_events(
         statuses=status_filters,
         limit=limit,
     )
+    resp.sync_status = sync_meta.get("overall_status")
+    resp.last_synced_at = sync_meta.get("last_synced_at")
+    resp.provider_statuses = sync_meta.get("providers")
+    return resp
 
 
 @router.get(
@@ -185,10 +199,28 @@ def get_active_disaster_events(
     type_filters = parse_disaster_types(disaster_types)
     status_filters = parse_crisis_statuses(status)
 
-    return get_all_active_disasters(
+    try:
+        sync_meta = ensure_fresh_disasters(session=db, disaster_types=type_filters)
+    except Exception as exc:
+        logger.warning("On-demand active disaster sync note: %s", exc)
+        sync_meta = get_sync_status_snapshot()
+
+    resp = get_all_active_disasters(
         session=db,
         disaster_types=type_filters,
         statuses=status_filters,
         limit=limit,
     )
+    resp.sync_status = sync_meta.get("overall_status")
+    resp.last_synced_at = sync_meta.get("last_synced_at")
+    resp.provider_statuses = sync_meta.get("providers")
+    return resp
+
+
+@router.get(
+    "/sync-status",
+    summary="Retrieve real-time disaster provider synchronization status",
+)
+def get_disaster_sync_status() -> dict:
+    return get_sync_status_snapshot()
 
